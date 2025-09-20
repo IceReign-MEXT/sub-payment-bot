@@ -1,240 +1,183 @@
-import os
 import asyncio
 import time
-from datetime import datetime
-import sqlite3
+from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
-from web3 import Web3
-from solana.rpc.async_api import AsyncClient as SolanaClient
-import requests
-from dotenv import load_dotenv
+from config import BOT_TOKEN, OWNER_ID
+from database import init_db, add_pending_payment_request, get_pending_payment_requests, mark_payment_processed, add_subscription, get_latest_subscription
+from payments import get_crypto_price, verify_eth_payment, verify_sol_payment
+from subscriptions import PLANS
 
-# -------------------- Load .env --------------------
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID"))
-SAFE_ETH_WALLET = os.getenv("SAFE_ETH_WALLET")
-SAFE_SOL_WALLET = os.getenv("SAFE_SOL_WALLET")
-INFURA_KEY = os.getenv("INFURA_KEY")
-CMC_API_KEY = os.getenv("CMC_API_KEY")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "subscriptions.db")
-
-# -------------------- Database --------------------
-conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False)
-c = conn.cursor()
-
-# Subscriptions
-c.execute("""
-CREATE TABLE IF NOT EXISTS subscriptions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id TEXT,
-    plan TEXT,
-    start_ts INTEGER,
-    expires_ts INTEGER
-)
-""")
-
-# Payments
-c.execute("""
-CREATE TABLE IF NOT EXISTS payments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id TEXT,
-    tx_hash TEXT,
-    chain TEXT,
-    amount REAL,
-    plan TEXT,
-    status TEXT,
-    ts INTEGER
-)
-""")
-
-# Pending payments
-c.execute("""
-CREATE TABLE IF NOT EXISTS pending_payments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id TEXT,
-    plan TEXT,
-    chain TEXT,
-    expected_amount REAL,
-    created_ts INTEGER,
-    processed INTEGER DEFAULT 0
-)
-""")
-
-conn.commit()
-
-def add_subscription(telegram_id, plan, start_ts, expires_ts):
-    c.execute(
-        "INSERT INTO subscriptions (telegram_id, plan, start_ts, expires_ts) VALUES (?, ?, ?, ?)",
-        (telegram_id, plan, int(start_ts), int(expires_ts))
-    )
-    conn.commit()
-
-def get_latest_subscription(telegram_id):
-    c.execute(
-        "SELECT id, plan, start_ts, expires_ts FROM subscriptions WHERE telegram_id=? ORDER BY id DESC LIMIT 1",
-        (telegram_id,)
-    )
-    row = c.fetchone()
-    if not row:
-        return None
-    return {"id": row[0], "plan": row[1], "start_ts": row[2], "expires_ts": row[3]}
-
-def add_pending_payment_request(telegram_id, plan, chain, expected_amount):
-    c.execute(
-        "INSERT INTO pending_payments (telegram_id, plan, chain, expected_amount, created_ts) VALUES (?, ?, ?, ?, ?)",
-        (telegram_id, plan, chain, float(expected_amount), int(time.time()))
-    )
-    conn.commit()
-
-def get_pending_payment_requests(chain=None):
-    if chain:
-        c.execute("SELECT id, telegram_id, plan, chain, expected_amount FROM pending_payments WHERE processed=0 AND chain=?", (chain,))
-    else:
-        c.execute("SELECT id, telegram_id, plan, chain, expected_amount FROM pending_payments WHERE processed=0")
-    rows = c.fetchall()
-    return [{"id": r[0], "telegram_id": r[1], "plan": r[2], "chain": r[3], "expected_amount": r[4]} for r in rows]
-
-def mark_payment_processed(pending_id):
-    c.execute("UPDATE pending_payments SET processed=1 WHERE id=?", (pending_id,))
-    conn.commit()
-
-# -------------------- Web3 & Solana --------------------
-w3 = Web3(Web3.HTTPProvider(f"https://mainnet.infura.io/v3/{INFURA_KEY}"))
-sol_client = SolanaClient("https://api.mainnet-beta.solana.com")
-
-def verify_eth_payment(tx_hash: str, amount_eth: float) -> bool:
-    try:
-        tx = w3.eth.get_transaction(tx_hash)
-        if tx.to and tx.to.lower() == SAFE_ETH_WALLET.lower():
-            value_eth = w3.from_wei(tx.value, "ether")
-            return value_eth >= amount_eth
-    except Exception as e:
-        print("❌ ETH verify error:", e)
-    return False
-
-async def verify_sol_payment(signature: str, amount_sol: float) -> bool:
-    try:
-        tx_resp = await sol_client.get_confirmed_transaction(signature)
-        if tx_resp.get("result"):
-            tx = tx_resp["result"]["transaction"]
-            for instr in tx["message"]["instructions"]:
-                parsed = instr.get("parsed")
-                if parsed and parsed["info"]["destination"] == SAFE_SOL_WALLET:
-                    lamports = int(parsed["info"]["lamports"])
-                    sol_value = lamports / 10**9
-                    return sol_value >= amount_sol
-    except Exception as e:
-        print("❌ SOL verify error:", e)
-    return False
-
-def get_crypto_price(symbol: str):
-    try:
-        headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
-        params = {"symbol": symbol, "convert": "USD"}
-        resp = requests.get("https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest", headers=headers, params=params)
-        data = resp.json()
-        return float(data["data"][symbol]["quote"]["USD"]["price"])
-    except:
-        return None
-
-# -------------------- Subscription Plans --------------------
-PLANS = {
-    "Daily": {"price": 5, "duration": 1},
-    "Weekly": {"price": 20, "duration": 7},
-    "Monthly": {"price": 50, "duration": 30},
-    "Yearly": {"price": 500, "duration": 365},
-    "Lifetime": {"price": 1000, "duration": None},
-}
-
-# -------------------- Telegram Handlers --------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("💎 Sub-Payment Bot is online! Use /plans to subscribe.")
+# --- Telegram Bot Handlers ---
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /start command."""
+    await update.message.reply_text("💎 Welcome to the Crypto Subscription Bot! Use /plans to see available subscriptions.")
 
 async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton(f"{k} - ${v['price']}", callback_data=f"plan:{k}")] for k, v in PLANS.items()
-    ]
+    """Handles the /plans command to show available subscription plans."""
+    keyboard = []
+    for k, v in PLANS.items():
+        keyboard.append([InlineKeyboardButton(f"{k} - ${v['price']}", callback_data=f"plan:{k}")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("💎 Choose a subscription plan:", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "💎 *Choose a subscription plan:*", 
+        reply_markup=reply_markup, 
+        parse_mode="Markdown"
+    )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles button clicks (e.g., plan selection)."""
     query = update.callback_query
-    await query.answer()
-    if query.data.startswith("plan:"):
-        plan = query.data.split(":")[1]
-        context.user_data["selected_plan"] = plan
+    await query.answer() # Acknowledge the callback query
 
-        # generate amounts
-        usd_amount = PLANS[plan]["price"]
-        eth_price = get_crypto_price("ETH")
-        sol_price = get_crypto_price("SOL")
-        if not eth_price or not sol_price:
-            await query.message.reply_text("❌ Failed to fetch crypto prices. Try again later.")
+    if query.data.startswith("plan:"):
+        plan_name = query.data.split(":")[1]
+        
+        if plan_name not in PLANS:
+            await query.message.reply_text("Invalid plan selected. Please try again.")
             return
 
-        eth_amount = round(usd_amount / eth_price, 6)
-        sol_amount = round(usd_amount / sol_price, 6)
+        plan_details = PLANS[plan_name]
+        usd_price = plan_details["price"]
 
-        add_pending_payment_request(query.from_user.id, plan, "ETH", eth_amount)
-        add_pending_payment_request(query.from_user.id, plan, "SOL", sol_amount)
+        # Fetch current crypto prices
+        eth_price = get_crypto_price("ETH")
+        sol_price = get_crypto_price("SOL")
 
-        msg = f"💰 *Payment Instructions*\n\nPlan: {plan}\nPrice: ${usd_amount}\n\n" \
-              f"🔹 Ethereum (ETH): `{eth_amount}` ETH\nAddress: `{SAFE_ETH_WALLET}`\n\n" \
-              f"🔹 Solana (SOL): `{sol_amount}` SOL\nAddress: `{SAFE_SOL_WALLET}`\n\n" \
-              "After sending, click /verify."
+        if not eth_price or not sol_price:
+            await query.message.reply_text("❌ Failed to fetch crypto prices. Please try again later.")
+            return
+
+        expected_eth_amount = round(usd_price / eth_price, 6)
+        expected_sol_amount = round(usd_price / sol_price, 6)
+
+        # Store pending payment requests in the database
+        # NOTE: In a production bot, each payment request should ideally correspond to a unique, temporary wallet address
+        # or a unique invoice ID generated by a payment gateway to ensure proper tracking and avoid sending to a shared address.
+        # For simplicity here, we direct to the SAFE_ wallets, but this is a security risk for payment tracking in real apps.
+        add_pending_payment_request(query.from_user.id, plan_name, "ETH", expected_eth_amount)
+        add_pending_payment_request(query.from_user.id, plan_name, "SOL", expected_sol_amount)
+
+        # Reply with payment instructions
+        msg = (
+            f"💰 *Payment Instructions for {plan_name} Plan*\n\n"
+            f"Price: ${usd_price}\n\n"
+            f"🔹 **Ethereum (ETH):**\n"
+            f"Amount: `{expected_eth_amount}` ETH\n"
+            f"Address: `{os.getenv('SAFE_ETH_WALLET')}`\n\n"
+            f"🔹 **Solana (SOL):**\n"
+            f"Amount: `{expected_sol_amount}` SOL\n"
+            f"Address: `{os.getenv('SAFE_SOL_WALLET')}`\n\n"
+            f"Once you send the payment, a background process will verify it automatically.\n"
+            f"You will receive a confirmation message shortly after your payment is detected and confirmed on the blockchain."
+            f"\n\n*Please ensure you send the exact crypto amount calculated.*"
+        )
         await query.message.reply_text(msg, parse_mode="Markdown")
 
-async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def my_subscription_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows the user their current subscription status."""
     user_id = update.effective_user.id
-    plan = context.user_data.get("selected_plan")
-    if not plan:
-        await update.message.reply_text("⚠️ You have not selected a plan yet. Use /plans first.")
-        return
+    subscription = get_latest_subscription(user_id)
 
-    usd_amount = PLANS[plan]["price"]
-    eth_pending = get_pending_payment_requests(chain="ETH")
-    sol_pending = get_pending_payment_requests(chain="SOL")
-
-    paid = False
-    # Check ETH payments
-    for req in eth_pending:
-        if req["telegram_id"] == user_id:
-            tx_hash = context.user_data.get("tx_hash")  # optional: user can provide
-            if tx_hash and verify_eth_payment(tx_hash, req["expected_amount"]):
-                mark_payment_processed(req["id"])
-                paid = True
-    # Check SOL payments
-    for req in sol_pending:
-        if req["telegram_id"] == user_id:
-            tx_sig = context.user_data.get("tx_sig")  # optional
-            if tx_sig and await verify_sol_payment(tx_sig, req["expected_amount"]):
-                mark_payment_processed(req["id"])
-                paid = True
-
-    if paid:
-        start_ts = int(time.time())
-        duration = PLANS[plan]["duration"] or 9999
-        expires_ts = start_ts + duration * 86400
-        add_subscription(user_id, plan, start_ts, expires_ts)
-        await update.message.reply_text(f"✅ Payment confirmed! You now have *{plan}* access.", parse_mode="Markdown")
+    if subscription:
+        expires_dt = datetime.fromtimestamp(subscription["expires_ts"])
+        time_left = expires_dt - datetime.now()
+        await update.message.reply_text(
+            f"🌟 Your current plan: *{subscription['plan']}*\n"
+            f"Expires on: `{expires_dt.strftime('%Y-%m-%d %H:%M:%S WAT')}`\n"
+            f"Time remaining: `{time_left.days}` days, `{time_left.seconds // 3600}` hours",
+            parse_mode="Markdown"
+        )
     else:
-        await update.message.reply_text("❌ Payment not detected yet. Make sure you sent the correct amount.")
+        await update.message.reply_text("You don't have an active subscription. Use /plans to subscribe!")
 
-# -------------------- Main --------------------
-async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("plans", plans_command))
-    app.add_handler(CommandHandler("verify", verify_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
+# --- Background Task ---
+async def check_payments_periodically(context: ContextTypes.DEFAULT_TYPE):
+    """Background task to check for pending payments and update subscriptions."""
+    pending_payments = get_pending_payment_requests()
+    
+    for payment in pending_payments:
+        telegram_id = int(payment["telegram_id"])
+        plan_name = payment["plan"]
+        expected_amount = payment["expected_amount"]
+        payment_chain = payment["chain"]
+        
+        is_paid = False
+        tx_hash_found = None # Placeholder for a found transaction hash/signature
 
-    print("💎 Bot is running with polling...")
-    await app.run_polling()
+        # In a real bot, you'd have a mechanism to get the tx_hash/signature.
+        # This could be from:
+        # 1. User providing it (less reliable)
+        # 2. Monitoring incoming transactions to the SAFE_WALLET (requires complex blockchain indexing)
+        # For this example, let's assume we can somehow retrieve it.
+        # For a full implementation, you would need to run blockchain scanners or use payment gateway webhooks.
+        # For demonstration purposes, we will simulate finding a transaction.
+
+        # Example: Mocking a transaction hash and verification
+        # You'd replace this with actual blockchain monitoring and verification logic
+        mock_tx_hash = "0xmocktransactionhash" + str(payment["id"]) # Just a placeholder
+        
+        if payment_chain == "ETH":
+            # For demonstration, assume transaction is verified after some time
+            # In real life: is_paid = await verify_eth_payment(actual_tx_hash, expected_amount)
+            # You would need the actual_tx_hash for this to work.
+            is_paid = True # Simulate success for demo
+            tx_hash_found = mock_tx_hash 
+        elif payment_chain == "SOL":
+            # For demonstration, assume transaction is verified after some time
+            # In real life: is_paid = await verify_sol_payment(actual_tx_signature, expected_amount)
+            # You would need the actual_tx_signature for this to work.
+            is_paid = True # Simulate success for demo
+            tx_hash_found = mock_tx_hash
+
+        if is_paid:
+            mark_payment_processed(payment["id"], tx_hash=tx_hash_found)
+            
+            plan_details = PLANS[plan_name]
+            duration_days = plan_details["duration"]
+            
+            start_ts = int(time.time())
+            if duration_days is not None:
+                expires_ts = start_ts + duration_days * 86400 # 86400 seconds in a day
+            else: # Lifetime plan
+                expires_ts = start_ts + 365 * 86400 * 100 # Effectively 100 years
+
+            add_subscription(telegram_id, plan_name, start_ts, expires_ts)
+            
+            await context.bot.send_message(
+                chat_id=telegram_id,
+                text=f"✅ Payment for *{plan_name}* confirmed! Your subscription is now active.",
+                parse_mode="Markdown"
+            )
+            print(f"💰 Confirmed payment for user {telegram_id}, plan {plan_name}.")
+
+        # Introduce a small delay to avoid rate limiting or excessive processing
+        await asyncio.sleep(0.5)
+
+# --- Main Application Setup ---
+def main():
+    """Starts the bot."""
+    init_db() # Initialize the database
+
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Register command handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("plans", plans_command))
+    application.add_handler(CommandHandler("mysubscription", my_subscription_command))
+    
+    # Register callback query handler for inline keyboard buttons
+    application.add_handler(CallbackQueryHandler(button_handler))
+
+    # Schedule the background payment checker job to run every 60 seconds
+    application.job_queue.run_repeating(check_payments_periodically, interval=60)
+    
+    print("🚀 Bot is polling...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
+

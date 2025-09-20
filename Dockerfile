@@ -1,15 +1,25 @@
-# Use official Python runtime as base image
+# Use an official Python base image
 FROM python:3.12-slim
 
-# Set working directory
+# Set work directory
 WORKDIR /app
 
-# Install dependencies
+# Copy requirements first (to leverage Docker cache)
 COPY requirements.txt .
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y build-essential libffi-dev curl && \
+    pip install --upgrade pip
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the bot files
+# Copy bot files
 COPY . .
+
+# Expose port if needed (not required for Telegram bot)
+# EXPOSE 8443
 
 # Run the bot
 CMD ["python", "bot.py"]

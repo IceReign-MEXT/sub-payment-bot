@@ -1,11 +1,10 @@
-# Render worker configuration for sub-payment-bot
+# Exported from Render on 2025-09-20
 version: "1"
-
 services:
-  - type: worker
-    name: sub-payment-bot-worker
+  - type: web
+    name: sub-payment-bot
+    runtime: docker
     repo: https://github.com/IceReign-MEXT/sub-payment-bot
-    branch: main
     plan: free
     envVars:
       - key: INFURA_KEY
@@ -28,6 +27,9 @@ services:
         sync: false
       - key: BOT_TOKEN
         sync: false
-    rootDir: ./
-    startCommand: python bot.py
+    region: oregon
+    healthCheckPath: /
+    dockerContext: .
+    dockerfilePath: Dockerfile
     autoDeployTrigger: commit
+    rootDir: ./

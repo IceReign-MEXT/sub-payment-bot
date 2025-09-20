@@ -1,6 +1,7 @@
 version: "1"
 services:
-  - type: web
+  # Change service type from `web` to `worker`
+  - type: worker
     name: sub-payment-bot
     runtime: python
     repo: https://github.com/IceReign-MEXT/sub-payment-bot

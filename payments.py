@@ -1,15 +1,19 @@
+import os
 import requests
 from telegram import Update
 from telegram.ext import ContextTypes
+from dotenv import load_dotenv
 
-# Example receiving wallets (replace with your safe wallets)
+load_dotenv()
+
+# Safe wallets
 RECEIVING_WALLETS = {
-    "ETH": "0xF2776435A6ba8dEaA6F90546B13B8a0E3eB751DD",
-    "SOL": "Cqnz6K1BeP7PUXxPtMJeXE3k7BKDYExh49g3aR19nva8"
+    "ETH": os.getenv("SAFE_ETH_WALLET"),
+    "SOL": os.getenv("SAFE_SOL_WALLET")
 }
 
-# CoinMarketCap API (replace with your own API key later)
-CMC_API_KEY = "YOUR_CMC_API_KEY"
+# CoinMarketCap API
+CMC_API_KEY = os.getenv("CMC_API_KEY")
 CMC_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
 
 def get_crypto_price(symbol: str):
@@ -31,10 +35,13 @@ async def request_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, pl
     sol_price = get_crypto_price("SOL")
 
     if not eth_price or not sol_price:
-        await update.callback_query.message.reply_text("❌ Failed to fetch crypto prices. Try again later.")
+        msg = "❌ Failed to fetch crypto prices. Try again later."
+        if update.callback_query:
+            await update.callback_query.message.reply_text(msg)
+        else:
+            await update.message.reply_text(msg)
         return
 
-    # Calculate amounts
     eth_amount = round(price_usd / eth_price, 6)
     sol_amount = round(price_usd / sol_price, 6)
 
@@ -51,4 +58,7 @@ async def request_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, pl
         f"✅ After payment, our system will confirm automatically."
     )
 
-    await update.callback_query.message.reply_text(message, parse_mode="Markdown")
+    if update.callback_query:
+        await update.callback_query.message.reply_text(message, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(message, parse_mode="Markdown")

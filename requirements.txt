@@ -1,5 +1,5 @@
-python-telegram-bot==20.3
-web3==6.1.0
-solana==0.26.1
-requests==2.31.0
-python-dotenv==1.0.0
+python-telegram-bot>=20.3
+web3==5.31.3          # Web3 compatible with Python 3.12
+solana==0.36.9        # Solana SDK compatible with Python 3.12
+requests>=2.31.0
+python-dotenv>=1.0.0

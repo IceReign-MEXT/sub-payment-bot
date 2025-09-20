@@ -1,5 +1,18 @@
+# Core dependencies
+setuptools>=68.0.0
+wheel>=0.41.0
+
+# Telegram bot
 python-telegram-bot>=20.3
-web3==5.31.3          # Web3 compatible with Python 3.12
-solana==0.36.9        # Solana SDK compatible with Python 3.12
+
+# Web3 (compatible with Python 3.13)
+web3==5.31.3
+
+# Solana client (compatible)
+solana==0.36.9
+
+# HTTP requests
 requests>=2.31.0
+
+# Environment variables loader
 python-dotenv>=1.0.0

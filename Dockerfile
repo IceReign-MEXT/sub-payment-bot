@@ -4,17 +4,16 @@ FROM python:3.12-slim
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first (to leverage Docker cache)
+# Copy requirements
 COPY requirements.txt .
 
-# Upgrade pip and install dependencies
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all bot files
 COPY . .
 
-# Expose port (optional, for webhook monitoring)
+# Expose port for Render health check
 EXPOSE 8080
 
 # Start the bot

@@ -1,60 +1,42 @@
-import sqlite3
-from datetime import datetime, timedelta
+import os
+from web3 import Web3
+from solana.rpc.api import Client as SolanaClient
+from dotenv import load_dotenv
 
-DB_NAME = "subscriptions.db"
+load_dotenv()
 
-def init_db():
-    """Initialize database & tables"""
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            plan TEXT,
-            start_date TEXT,
-            end_date TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+SAFE_ETH_WALLET = os.getenv("SAFE_ETH_WALLET")
+SAFE_SOL_WALLET = os.getenv("SAFE_SOL_WALLET")
+INFURA_KEY = os.getenv("INFURA_KEY")
 
-def add_subscription(user_id: int, username: str, plan: str, days: int):
-    """Add or update a user subscription"""
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
+# Ethereum setup
+w3 = Web3(Web3.HTTPProvider(INFURA_KEY))
 
-    start_date = datetime.utcnow()
-    end_date = start_date + timedelta(days=days)
+# Solana setup
+sol_client = SolanaClient("https://api.mainnet-beta.solana.com")
 
-    cur.execute("""
-        INSERT OR REPLACE INTO users (user_id, username, plan, start_date, end_date)
-        VALUES (?, ?, ?, ?, ?)
-    """, (user_id, username, plan, start_date.isoformat(), end_date.isoformat()))
+def verify_eth_payment(tx_hash: str, amount_eth: float):
+    """Check if a given ETH transaction to SAFE_ETH_WALLET is valid"""
+    try:
+        tx = w3.eth.get_transaction(tx_hash)
+        if tx.to.lower() == SAFE_ETH_WALLET.lower():
+            value_eth = w3.from_wei(tx.value, "ether")
+            return value_eth >= amount_eth
+    except Exception as e:
+        print("❌ ETH verify error:", e)
+    return False
 
-    conn.commit()
-    conn.close()
-
-def check_subscription(user_id: int):
-    """Check if user has an active subscription"""
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
-    cur.execute("SELECT plan, end_date FROM users WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-
-    if row:
-        plan, end_date = row
-        if datetime.fromisoformat(end_date) > datetime.utcnow():
-            return {"plan": plan, "active": True, "end_date": end_date}
-        else:
-            return {"plan": plan, "active": False, "end_date": end_date}
-    return None
-
-def remove_expired():
-    """Remove expired subscriptions"""
-    conn = sqlite3.connect(DB_NAME)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM users WHERE end_date < ?", (datetime.utcnow().isoformat(),))
-    conn.commit()
-    conn.close()
+def verify_sol_payment(signature: str, amount_sol: float):
+    """Check if a given SOL transaction to SAFE_SOL_WALLET is valid"""
+    try:
+        tx_resp = sol_client.get_confirmed_transaction(signature)
+        if tx_resp["result"]:
+            tx = tx_resp["result"]["transaction"]
+            for instr in tx["message"]["instructions"]:
+                if instr.get("parsed") and instr["parsed"]["info"]["destination"] == SAFE_SOL_WALLET:
+                    lamports = int(instr["parsed"]["info"]["lamports"])
+                    sol_value = lamports / 10**9
+                    return sol_value >= amount_sol
+    except Exception as e:
+        print("❌ SOL verify error:", e)
+    return False

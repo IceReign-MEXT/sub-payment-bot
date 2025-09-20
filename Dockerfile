@@ -4,16 +4,14 @@ FROM python:3.12-slim
 # Set working directory
 WORKDIR /app
 
-# Copy requirements
+# Copy requirements and install
 COPY requirements.txt .
-
-# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all bot files
 COPY . .
 
-# Expose port for Render health check
+# Expose port if using webhooks (optional)
 EXPOSE 8080
 
 # Start the bot

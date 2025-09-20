@@ -1,15 +1,10 @@
 import os
 import requests
-from dotenv import load_dotenv
-from subscriptions import SAFE_ETH_WALLET, SAFE_SOL_WALLET
+from config import SAFE_ETH_WALLET, SAFE_SOL_WALLET, CMC_API_KEY
 
-load_dotenv()
-
-# CoinMarketCap API
-CMC_API_KEY = os.getenv("CMC_API_KEY")
 CMC_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
 
-# Function to fetch crypto price
+# Fetch crypto price from CoinMarketCap
 def get_crypto_price(symbol: str):
     try:
         headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
@@ -21,7 +16,7 @@ def get_crypto_price(symbol: str):
         print("❌ Price fetch error:", e)
         return None
 
-# Generate payment address (currently returns safe wallet)
+# Generate a payment address for a user
 def generate_payment_address(user_id, crypto="ETH"):
     if crypto.upper() == "ETH":
         return SAFE_ETH_WALLET
@@ -30,22 +25,18 @@ def generate_payment_address(user_id, crypto="ETH"):
     else:
         return None
 
-# Check if user paid
+# Check if a user paid the required amount
 def check_payment(user_id, amount_usd, crypto="ETH", tx_hash_or_sig=None):
-    """
-    Verifies if a user has paid the required amount.
-    tx_hash_or_sig: optional, provide transaction hash (ETH) or signature (SOL)
-    """
     from subscriptions import verify_eth_payment, verify_sol_payment
 
     if crypto.upper() == "ETH":
         if not tx_hash_or_sig:
             return False
-        return verify_eth_payment(tx_hash_or_sig, amount_usd)  # amount in ETH
+        return verify_eth_payment(tx_hash_or_sig, amount_usd)
     elif crypto.upper() == "SOL":
         if not tx_hash_or_sig:
             return False
-        return verify_sol_payment(tx_hash_or_sig, amount_usd)  # amount in SOL
+        return verify_sol_payment(tx_hash_or_sig, amount_usd)
     else:
         return False
 

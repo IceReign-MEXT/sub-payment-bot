@@ -1,5 +1,7 @@
+
 python-telegram-bot==20.7
 web3==6.1.0
 solana==0.26.0
 requests==2.31.0
 python-dotenv==1.0.1
+solders==0.26.0 # Add this for Solana Pubkey handling

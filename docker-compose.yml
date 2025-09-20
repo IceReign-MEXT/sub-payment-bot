@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  icebot:
+  sub-payment-bot:
     build: .
-    container_name: icebot
+    container_name: sub-payment-bot
     restart: always
     env_file:
       - .env

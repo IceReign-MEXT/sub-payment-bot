@@ -1,0 +1,10 @@
+version: "3.9"
+
+services:
+  payment-bot:
+    build: .
+    container_name: payment-bot
+    restart: always
+    env_file:
+      - .env
+    command: python bot.py

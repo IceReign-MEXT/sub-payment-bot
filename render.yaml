@@ -1,35 +1,33 @@
-# Exported from Render on 2025-09-20T06:06:18Z
 version: "1"
 services:
-  - type: web
-    name: sub-payment-bot
-    runtime: docker
-    repo: https://github.com/IceReign-MEXT/sub-payment-bot
-    plan: free
-    envVars:
-      - key: BOT_TOKEN
-        sync: false
-      - key: INFURA_KEY
-        sync: false
-      - key: CMC_API_KEY
-        sync: false
-      - key: OWNER_LANG
-        sync: false
-      - key: OWNER_LAST
-        sync: false
-      - key: OWNER_FIRST
-        sync: false
-      - key: OWNER_USERNAME
-        sync: false
-      - key: OWNER_ID
-        sync: false
-      - key: SAFE_SOL_WALLET
-        sync: false
-      - key: SAFE_ETH_WALLET
-        sync: false
-    region: oregon
-    healthCheckPath: /
-    dockerContext: .
-    dockerfilePath: Dockerfile
-    autoDeployTrigger: commit
-    rootDir: ./
+- type: web
+  name: sub-payment-bot
+  runtime: docker
+  repo: https://github.com/IceReign-MEXT/sub-payment-bot
+  plan: free
+  envVars:
+    - key: BOT_TOKEN
+      sync: false
+    - key: OWNER_FIRST
+      sync: false
+    - key: OWNER_LAST
+      sync: false
+    - key: OWNER_LANG
+      sync: false
+    - key: OWNER_USERNAME
+      sync: false
+    - key: OWNER_ID
+      sync: false
+    - key: SAFE_SOL_WALLET
+      sync: false
+    - key: SAFE_ETH_WALLET
+      sync: false
+    - key: INFURA_KEY
+      sync: false
+    - key: CMC_API_KEY
+      sync: false
+  region: oregon
+  dockerContext: .
+  dockerfilePath: Dockerfile
+  autoDeployTrigger: commit
+  rootDir: ./

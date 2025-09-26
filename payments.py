@@ -1,120 +1,80 @@
+# payments.py
 import os
 import requests
-from web3 import Web3
-from solana.rpc.async_api import AsyncClient as SolanaClient
-from config import SAFE_ETH_WALLET, SAFE_SOL_WALLET, INFURA_KEY, CMC_API_KEY
-from solders.pubkey import Pubkey
-from decimal import Decimal, getcontext
+from solana.rpc.api import Client
 
-# Set precision for Decimal calculations
-getcontext().prec = 10
+# Environment variables
+ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY")
+SAFE_ETH_WALLET = os.getenv("SAFE_ETH_WALLET")
+SAFE_SOL_WALLET = os.getenv("SAFE_SOL_WALLET")
+SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 
-# --- Blockchain Client Setup ---
-# Ethereum setup
-w3 = Web3(Web3.HTTPProvider(f"https://mainnet.infura.io/v3/{INFURA_KEY}"))
-
-# Solana setup
-sol_client = SolanaClient("https://api.mainnet-beta.solana.com")
-
-# --- Crypto Price Fetching ---
-def get_crypto_price(symbol: str) -> float | None:
-    """Fetches the current USD price of a cryptocurrency from CoinMarketCap."""
+# --- ETH Payment Check via Etherscan ---
+def verify_eth_payment(expected_amount):
+    """
+    Checks if a payment matching expected_amount (ETH) was received.
+    Returns True if found, False otherwise.
+    """
+    url = "https://api.etherscan.io/api"
+    params = {
+        "module": "account",
+        "action": "txlist",
+        "address": SAFE_ETH_WALLET,
+        "startblock": 0,
+        "endblock": 99999999,
+        "sort": "desc",
+        "apikey": ETHERSCAN_KEY
+    }
     try:
-        headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
-        params = {"symbol": symbol.upper(), "convert": "USD"}
-        resp = requests.get("https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest", headers=headers, params=params, timeout=5)
-        resp.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        resp = requests.get(url, params=params)
+        resp.raise_for_status()
         data = resp.json()
-        return float(data["data"][symbol.upper()]["quote"]["USD"]["price"])
-    except requests.exceptions.RequestException as req_err:
-        print(f"❌ CMC API request error for {symbol}: {req_err}")
-    except KeyError:
-        print(f"❌ CMC API response error: Symbol {symbol} not found or data structure changed.")
-    except Exception as e:
-        print(f"❌ get_crypto_price error for {symbol}: {e}")
-    return None
+        if data["status"] != "1":
+            return False
 
-# --- Blockchain Verification Functions ---
-async def verify_eth_payment(tx_hash: str, expected_amount_eth: float) -> bool:
+        for tx in data["result"]:
+            value_eth = int(tx["value"]) / 10**18
+            if abs(value_eth - expected_amount) < 0.000001:
+                return True
+        return False
+    except Exception as e:
+        print("ETH payment verification error:", e)
+        return False
+
+# --- SOL Payment Check via Solana RPC ---
+def verify_sol_payment(expected_amount):
     """
-    Check if a given ETH transaction to SAFE_ETH_WALLET is valid.
-    Checks: transaction existence, recipient address, and amount sent.
+    Checks if a payment matching expected_amount (SOL) was received.
+    Returns True if found, False otherwise.
     """
     try:
-        # Get transaction details
-        tx = w3.eth.get_transaction(tx_hash)
-        if not tx:
-            print(f"❌ ETH Transaction {tx_hash} not found.")
-            return False
-
-        # Check destination address
-        if tx.to and tx.to.lower() != SAFE_ETH_WALLET.lower():
-            print(f"❌ ETH Transaction {tx_hash}: Incorrect recipient address.")
-            return False
-
-        # Check transaction value
-        value_wei = tx.value
-        value_eth = Decimal(w3.from_wei(value_wei, "ether"))
-        
-        # Allow a small tolerance for floating point comparisons if necessary, but direct comparison is usually fine here
-        if value_eth >= Decimal(expected_amount_eth):
-            return True
-        else:
-            print(f"❌ ETH Transaction {tx_hash}: Amount mismatch. Sent: {value_eth} ETH, Expected: {expected_amount_eth} ETH.")
-            return False
-
+        client = Client(SOLANA_RPC_URL)
+        resp = client.get_balance(SAFE_SOL_WALLET)
+        if resp["result"]:
+            balance_sol = resp["result"]["value"] / 10**9
+            if balance_sol >= expected_amount:
+                return True
+        return False
     except Exception as e:
-        print(f"❌ ETH verify error for tx {tx_hash}: {e}")
-    return False
+        print("SOL payment verification error:", e)
+        return False
 
-async def verify_sol_payment(signature: str, expected_amount_sol: float) -> bool:
+# --- USD Price Fetching (Optional) ---
+def get_crypto_price(symbol: str):
     """
-    Check if a given SOL transaction (identified by its signature) to SAFE_SOL_WALLET is valid.
-    Checks: transaction existence, recipient address, and amount sent.
+    Fetch price in USD for a given symbol (ETH or SOL) using CoinMarketCap API.
+    Returns float USD price, or None if unavailable.
     """
+    CMC_API_KEY = os.getenv("CMC_API_KEY")
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+    params = {"symbol": symbol, "convert": "USD"}
     try:
-        # Get confirmed transaction details
-        tx_resp = await sol_client.get_confirmed_transaction(signature, commitment="confirmed")
-        
-        if not tx_resp or not tx_resp.value:
-            print(f"❌ SOL Transaction {signature} not found or not confirmed.")
-            return False
-
-        # Transaction details are nested under tx_resp.value.transaction
-        tx = tx_resp.value.transaction
-
-        # Check for transfer instruction and recipient
-        destination_pubkey = Pubkey.from_string(SAFE_SOL_WALLET)
-        
-        # Iterate through instructions to find the relevant transfer
-        # This parsing might need adjustments based on the exact transaction type (e.g., system program transfer, token transfer)
-        is_transfer_to_safe_wallet = False
-        total_transfer_to_safe_wallet = Decimal(0)
-
-        # For simple system program transfers
-        if tx.message.instructions:
-            for instr in tx.message.instructions:
-                # The 'parsed' field for system instructions reveals transfer details
-                if hasattr(instr, 'parsed') and instr.parsed:
-                    if instr.parsed.get('type') == 'transfer' and \
-                       instr.parsed['info'].get('destination') == str(destination_pubkey):
-                        lamports = Decimal(instr.parsed['info'].get('lamports', 0))
-                        total_transfer_to_safe_wallet += lamports
-                        is_transfer_to_safe_wallet = True
-
-        if not is_transfer_to_safe_wallet:
-            print(f"❌ SOL Transaction {signature}: No transfer instruction found to {SAFE_SOL_WALLET}.")
-            return False
-
-        sol_value = total_transfer_to_safe_wallet / Decimal(10**9) # Lamports to SOL conversion
-
-        if sol_value >= Decimal(expected_amount_sol):
-            return True
-        else:
-            print(f"❌ SOL Transaction {signature}: Amount mismatch. Sent: {sol_value} SOL, Expected: {expected_amount_sol} SOL.")
-            return False
-
+        resp = requests.get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        price = data["data"][symbol]["quote"]["USD"]["price"]
+        return price
     except Exception as e:
-        print(f"❌ SOL verify error for signature {signature}: {e}")
-    return False
-
+        print(f"{symbol} price fetch error:", e)
+        return None

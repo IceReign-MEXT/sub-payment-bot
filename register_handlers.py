@@ -1,14 +1,12 @@
 import os
-from dotenv import load_dotenv
-load_dotenv()  # loads all variables from .env
 import asyncio
 import logging
 import time
 from datetime import datetime
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# local modules
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes
+
 from subscriptions import PLANS
 from database import (
     add_pending_payment_request,
@@ -19,9 +17,10 @@ from database import (
 )
 from payments import get_crypto_price, verify_eth_payment, verify_sol_payment
 from handlers import make_plans_keyboard
-from manual_handlers import manual_safe_run  # <-- Add this
+from register_handlers import register_handlers
+from manual_handlers import manual_safe_run
 
-# load env via config or .env
+# Load env
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
@@ -31,15 +30,9 @@ SAFE_SOL_WALLET = os.environ.get("SAFE_SOL_WALLET")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ----------------------------
-# Wrap your critical functions
-# ----------------------------
-safe_check_wallets = manual_safe_run(lambda: logger.info("Checking wallets..."))
-safe_check_database = manual_safe_run(lambda: logger.info("Checking database tables..."))
-safe_check_payments = manual_safe_run(lambda: logger.info("Checking pending payments..."))
-
+# --- Command Handlers ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("💎 Welcome! Use /plans to view subscriptions.")
+    await update.message.reply_text("💎 Welcome! Use /plans to view subscription plans.")
 
 async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = make_plans_keyboard(PLANS)
@@ -58,8 +51,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if not query.data:
-        return
-    if query.data.startswith("plan:"):
+        return    if query.data.startswith("plan:"):
         plan_name = query.data.split(":", 1)[1]
         if plan_name not in PLANS:
             await query.message.reply_text("Invalid plan.")
@@ -87,6 +79,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.message.reply_text(text, parse_mode="Markdown")
 
+# --- Periodic Payment Check ---
 async def check_payments_periodically(context: ContextTypes.DEFAULT_TYPE):
     pending = get_pending_payment_requests()
     for p in pending:
@@ -107,31 +100,23 @@ async def check_payments_periodically(context: ContextTypes.DEFAULT_TYPE):
             plan_details = PLANS[plan]
             duration_days = plan_details["duration"]
             start_ts = int(time.time())
-            if duration_days:
-                expires_ts = start_ts + int(duration_days) * 86400
-            else:
-                expires_ts = start_ts + 365 * 86400 * 100  # lifetime ~100 years
+            expires_ts = start_ts + int(duration_days) * 86400 if duration_days else start_ts + 365*86400*100
             add_subscription(tid, plan, start_ts, expires_ts)
             try:
-                await context.bot.send_message(chat_id=tid, text=f"✅ Payment received and subscription activated for {plan}.")
+                await context.bot.send_message(chat_id=tid, text=f"✅ Payment received. Subscription activated: {plan}")
             except Exception:
                 logger.exception("Failed sending confirmation message")
 
+# --- Startup ---
 async def on_startup(app):
-    safe_check_wallets()
-    safe_check_database()
-    safe_check_payments()
-    app.job_queue.run_repeating(check_payments_periodically, interval=POLL_INTERVAL)
+    app.job_queue.run_repeating(lambda ctx: manual_safe_run(check_payments_periodically, ctx), interval=POLL_INTERVAL)
 
 def main():
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN missing in environment")
         return
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("plans", plans_command))
-    app.add_handler(CommandHandler("mysubscription", my_subscription_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    register_handlers(app, start_command, plans_command, my_subscription_command, button_handler)
     app.post_init = on_startup
     logger.info("Bot starting...")
     app.run_polling()

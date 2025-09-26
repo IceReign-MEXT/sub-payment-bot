@@ -1,4 +1,4 @@
-# Render YAML for SoftBot + wolfguard_db
+# Render configuration for SoftBot + wolfguard_db
 version: "1"
 
 databases:
@@ -8,8 +8,8 @@ databases:
   plan: free
   region: oregon
   ipAllowList:
-  - source: 0.0.0.0/0
-    description: everywhere
+    - source: 0.0.0.0/0
+      description: everywhere
   postgresMajorVersion: "16"
 
 services:
@@ -19,28 +19,32 @@ services:
   repo: https://github.com/IceReign-MEXT/sub-payment-bot
   plan: free
   envVars:
-  - key: BOT_TOKEN
-    value: 8018403994:AAGjxumideAy9XhFIFuXiYHTerUgsIPjieg
-  - key: SAFE_ETH_WALLET
-    value: 0x08D171685e51bAf7a929cE8945CF25b3D1Ac9756
-  - key: SAFE_SOL_WALLET
-    value: 3JqvK1ZAt67nipBVgZj6zWvuT8icMWBMWyu5AwYnhVss
-  - key: OWNER_ID
-    value: 6453658778
-  - key: OWNER_USERNAME
-    value: "@RobertSmithETH"
-  - key: OWNER_FIRST
-    value: Mex
-  - key: OWNER_LAST
-    value: Robert
-  - key: OWNER_LANG
-    value: en
-  - key: CMC_API_KEY
-    value: d978b65e-e6dc-4163-81a3-f7639f6eff70
-  - key: INFURA_KEY
-    value: https://gas.api.infura.io/v3/d91d4edb39b9488897dae682f64b8cbb
-  - key: DATABASE_URL
-    value: postgresql://wolfguard_db_user:O6r5KPqhexFWOKThqLCoyoHRvggtzAy0@dpg-d3a5rn15pdvs73cjusqg-a.oregon-postgres.render.com/wolfguard_db
+    - key: BOT_TOKEN
+      value: 8018403994:AAGjxumideAy9XhFIFuXiYHTerUgsIPjieg
+    - key: SAFE_ETH_WALLET
+      value: 0x08D171685e51bAf7a929cE8945CF25b3D1Ac9756
+    - key: SAFE_SOL_WALLET
+      value: 3JqvK1ZAt67nipBVgZj6zWvuT8icMWBMWyu5AwYnhVss
+    - key: OWNER_ID
+      value: 6453658778
+    - key: OWNER_USERNAME
+      value: "@RobertSmithETH"
+    - key: OWNER_FIRST
+      value: Mex
+    - key: OWNER_LAST
+      value: Robert
+    - key: OWNER_LANG
+      value: en
+    - key: CMC_API_KEY
+      value: d978b65e-e6dc-4163-81a3-f7639f6eff70
+    - key: INFURA_KEY
+      value: https://mainnet.infura.io/v3/d91d4edb39b9488897dae682f64b8cbb
+    - key: ETHERSCAN_KEY
+      value: T6H7KF46NT1GFP9BDRVNQ3D5GI7JPXZ671
+    - key: SOLANA_RPC_URL
+      value: https://api.mainnet-beta.solana.com
+    - key: DATABASE_URL
+      value: postgresql://wolfguard_db_user:O6r5KPqhexFWOKThqLCoyoHRvggtzAy0@dpg-d3a5rn15pdvs73cjusqg-a.oregon-postgres.render.com/wolfguard_db
   region: oregon
   healthCheckPath: /
   dockerContext: .

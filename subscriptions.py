@@ -1,35 +1,29 @@
-from telegram import Update
-from telegram.ext import ContextTypes
+import os
+from web3 import Web3
+from solana.rpc.api import Client as SolanaClient
+from dotenv import load_dotenv
 
-# Subscription plans
-PLANS = {
-    "Daily": {"price": 7, "duration": 1},       # 1 day
-    "Weekly": {"price": 15, "duration": 7},     # 7 days
-    "Monthly": {"price": 100, "duration": 30},  # 30 days
-    "Yearly": {"price": 1200, "duration": 365}, # 365 days
-    "Lifetime": {"price": 1600, "duration": None}  # No expiry
-}
+load_dotenv()
 
-# Handle subscription request
-async def handle_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE, plan: str):
-    user = update.callback_query.from_user
-    details = PLANS.get(plan)
+SAFE_ETH_WALLET = os.getenv("SAFE_ETH_WALLET")
+SAFE_SOL_WALLET = os.getenv("SAFE_SOL_WALLET")
+INFURA_KEY = os.getenv("INFURA_KEY")
 
-    if not details:
-        await update.callback_query.message.reply_text("❌ Invalid plan selected.")
-        return
+# Ethereum setup
+w3 = Web3(Web3.HTTPProvider(INFURA_KEY))
 
-    # For now just show price (payment logic comes later)
-    price = details["price"]
-    duration = "Lifetime" if details["duration"] is None else f"{details['duration']} days"
+# Solana setup
+sol_client = SolanaClient("https://api.mainnet-beta.solana.com")
 
-    await update.callback_query.message.reply_text(
-        f"📌 You selected *{plan} Plan*.\n\n"
-        f"💵 Price: ${price}\n"
-        f"⏳ Duration: {duration}\n\n"
-        f"✅ Payment instructions will follow soon...",
-        parse_mode="Markdown"
-    )
+# Verify ETH payment
+def verify_eth_payment(user_wallet, amount_eth):
+    balance = w3.eth.get_balance(SAFE_ETH_WALLET)
+    balance_eth = w3.from_wei(balance, "ether")
+    return balance_eth >= amount_eth
 
-    # Log to console
-    print(f"User @{user.username} ({user.id}) selected {plan} plan.")
+# Verify SOL payment
+def verify_sol_payment(user_wallet, amount_sol):
+    resp = sol_client.get_balance(SAFE_SOL_WALLET)
+    balance_lamports = resp["result"]["value"]
+    balance_sol = balance_lamports / 10**9
+    return balance_sol >= amount_sol

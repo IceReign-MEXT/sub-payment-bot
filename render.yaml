@@ -1,11 +1,7 @@
 services:
-  - type: worker
-    name: coinbot
+  - type: web
+    name: icesub-bot
     env: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
-    envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: CMC_API_KEY
-        sync: false

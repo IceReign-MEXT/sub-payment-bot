@@ -1,12 +1,21 @@
-# Ignore environment variable files
-.env
+# Use a lightweight Python image
+FROM python:3.11-slim
 
-# Ignore Python specific files
-__pycache__/
-*.pyc
-*.egg-info/
-.pytest_cache/
-.vscode/
+# Set working directory
+WORKDIR /app
 
-# Ignore database file
-*.db
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy all project files
+COPY . .
+
+# Set the default command to run your bot
+CMD ["python", "bot.py"]

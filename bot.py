@@ -120,11 +120,10 @@ async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for k, v in PLANS.items():
         keyboard.append([InlineKeyboardButton(f"{k} - ${v['price']}", callback_data=f"plan:{k}")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "💎 *Choose a subscription plan:*", 
-        reply_markup=reply_markup, 
+        "💎 *Choose a subscription plan:*",
+        reply_markup=reply_markup,
         parse_mode="Markdown"
     )
 
@@ -194,8 +193,7 @@ def main():
     await query.answer() # Acknowledge the callback query
 
     if query.data.startswith("plan:"):
-        plan_name = query.data.split(":")[1]
-        
+        plan_name = query.data.split(":")[1] 
         if plan_name not in PLANS:
             await query.message.reply_text("Invalid plan selected. Please try again.")
             return
@@ -258,13 +256,11 @@ async def my_subscription_command(update: Update, context: ContextTypes.DEFAULT_
 async def check_payments_periodically(context: ContextTypes.DEFAULT_TYPE):
     """Background task to check for pending payments and update subscriptions."""
     pending_payments = get_pending_payment_requests()
-    
     for payment in pending_payments:
         telegram_id = int(payment["telegram_id"])
         plan_name = payment["plan"]
         expected_amount = payment["expected_amount"]
         payment_chain = payment["chain"]
-        
         is_paid = False
         tx_hash_found = None # Placeholder for a found transaction hash/signature
 
@@ -278,14 +274,12 @@ async def check_payments_periodically(context: ContextTypes.DEFAULT_TYPE):
 
         # Example: Mocking a transaction hash and verification
         # You'd replace this with actual blockchain monitoring and verification logic
-        mock_tx_hash = "0xmocktransactionhash" + str(payment["id"]) # Just a placeholder
-        
-        if payment_chain == "ETH":
+        mock_tx_hash = "0xmocktransactionhash" + str(payment["id"]) # Just a placeholder        if payment_chain == "ETH":
             # For demonstration, assume transaction is verified after some time
             # In real life: is_paid = await verify_eth_payment(actual_tx_hash, expected_amount)
             # You would need the actual_tx_hash for this to work.
             is_paid = True # Simulate success for demo
-            tx_hash_found = mock_tx_hash 
+            tx_hash_found = mock_tx_has
         elif payment_chain == "SOL":
             # For demonstration, assume transaction is verified after some time
             # In real life: is_paid = await verify_sol_payment(actual_tx_signature, expected_amount)
@@ -295,10 +289,8 @@ async def check_payments_periodically(context: ContextTypes.DEFAULT_TYPE):
 
         if is_paid:
             mark_payment_processed(payment["id"], tx_hash=tx_hash_found)
-            
             plan_details = PLANS[plan_name]
             duration_days = plan_details["duration"]
-            
             start_ts = int(time.time())
             if duration_days is not None:
                 expires_ts = start_ts + duration_days * 86400 # 86400 seconds in a day
@@ -306,7 +298,6 @@ async def check_payments_periodically(context: ContextTypes.DEFAULT_TYPE):
                 expires_ts = start_ts + 365 * 86400 * 100 # Effectively 100 years
 
             add_subscription(telegram_id, plan_name, start_ts, expires_ts)
-            
             await context.bot.send_message(
                 chat_id=telegram_id,
                 text=f"✅ Payment for *{plan_name}* confirmed! Your subscription is now active.",
@@ -323,18 +314,15 @@ def main():
     init_db() # Initialize the database
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-    
     # Register command handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("plans", plans_command))
     application.add_handler(CommandHandler("mysubscription", my_subscription_command))
-    
     # Register callback query handler for inline keyboard buttons
     application.add_handler(CallbackQueryHandler(button_handler))
 
     # Schedule the background payment checker job to run every 60 seconds
     application.job_queue.run_repeating(check_payments_periodically, interval=60)
-    
     print("🚀 Bot is polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 >>>>>>> origin/main

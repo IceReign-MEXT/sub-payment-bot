@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes
 
 from subscriptions import PLANS, handle_subscription
 from payments import generate_payment_address, check_payment
-from database import add_subscription, check_subscription
+from database import add_subscription
 
 # Show subscription plans
 async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -15,9 +15,10 @@ async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(f"Lifetime - ${PLANS['Lifetime']['price']}", callback_data="plan:Lifetime")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text("💎 *Choose a subscription plan:*", 
-                                    reply_markup=reply_markup, parse_mode="Markdown")
+    await update.message.reply_text(
+        "💎 *Choose a subscription plan:*", 
+        reply_markup=reply_markup, parse_mode="Markdown"
+    )
 
 # Handle button click
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -26,9 +27,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data.startswith("plan:"):
         plan = query.data.split(":")[1]
-        await handle_subscription(update, context, plan)
+        handle_subscription(update, context, plan)
 
-        # Create unique wallet address for user
+        # Generate payment address
         address = generate_payment_address(query.from_user.id)
         await query.message.reply_text(
             f"💰 Please send *${PLANS[plan]['price']} USDT/ETH* to this address:\n\n"
@@ -37,28 +38,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-        # Save selected plan temporarily
-        context.user_data["selected_plan"] = plan
-
 # Verify payment
 async def verify_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     plan = context.user_data.get("selected_plan")
 
     if not plan:
-        await update.message.reply_text("⚠️ You have not selected a plan yet. Use /plans first.")
+        await update.message.reply_text(
+            "⚠️ You have not selected a plan yet. Use /plans first."
+        )
         return
 
     amount = PLANS[plan]["price"]
-    paid = check_payment(user.id, amount)
+    tx_hash_or_sig = context.user_data.get("tx_hash")  # optional: user can provide
+    paid = check_payment(user.id, amount, tx_hash_or_sig=tx_hash_or_sig)
 
     if paid:
         days = PLANS[plan]["duration"] or 9999  # Lifetime = big number
         add_subscription(user.id, user.username or "unknown", plan, days)
-
         await update.message.reply_text(
-            f"✅ Payment confirmed!\n"
-            f"🎉 You now have *{plan}* access."
+            f"✅ Payment confirmed!\n🎉 You now have *{plan}* access.",
+            parse_mode="Markdown"
         )
     else:
-        await update.message.reply_text("❌ Payment not detected yet. Please try again later.")
+        await update.message.reply_text(
+            "❌ Payment not detected yet. Please try again later."
+        )

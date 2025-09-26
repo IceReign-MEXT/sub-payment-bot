@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 python-telegram-bot==20.3
 <<<<<<< HEAD
 requests==2.31.0
@@ -25,3 +26,12 @@ websockets==11.0.3
 construct-typing==0.10.2
 typing-extensions==4.9.0
 >>>>>>> bb60c29 (Initial commit - IceSub Bot)
+=======
+
+python-telegram-bot==20.7
+web3==6.1.0
+solana==0.26.0
+requests==2.31.0
+python-dotenv==1.0.1
+solders==0.26.0 # Add this for Solana Pubkey handling
+>>>>>>> origin/main

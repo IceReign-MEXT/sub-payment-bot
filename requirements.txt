@@ -13,3 +13,4 @@ python-dotenv
 websockets
 construct-typing
 typing-extensions
+psycopg2-binary

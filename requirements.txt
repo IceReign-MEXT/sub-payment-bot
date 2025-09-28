@@ -1,16 +1,11 @@
-python-telegram-bot
-httpx
-httpcore
-anyio
-h11
-idna
-sniffio
-certifi
+# requirements.txt
+--only-binary :all:
+python-telegram-bot[webhooks]
+Flask
+gunicorn
+gevent
+python-dotenv
 web3
 solana
-solders
-python-dotenv
-websockets
-construct-typing
-typing-extensions
-psycopg2-binary
+requests
+

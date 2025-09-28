@@ -21,6 +21,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy all project files
 COPY . .
 
-# Set the default command to run your bot
-CMD ["python", "bot.py"]
-
+# Set the default command to run your bot["python", "bot.py"

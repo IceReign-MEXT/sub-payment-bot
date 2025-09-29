@@ -1,5 +1,5 @@
 # Render configuration for SoftBot + wolfguard_db
-version: "1"
+version: "2"
 
 databases:
 - name: wolfguard_db

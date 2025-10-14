@@ -42,7 +42,7 @@ pip install -r requirements.txt || true
 echo "-> Generating .env file..."
 cat > .env <<EOF
 # 🔹 General Bot Config
-BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+BOT_TOKEN=8018403994:AAGjxumideAy9XhFIFuXiYHTerUgsIPjieg
 ADMIN_ID=6453658778
 SAFE_SOL_WALLET=HxmywH2gW9ezQ2nBXwurpaWsZS6YvdmLF23R9WgMAM7p
 SAFE_ETH_WALLET=0x5B0703825e5299b52b0d00193Ac22E20795defBa

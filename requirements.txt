@@ -3,4 +3,4 @@ uvicorn
 requests
 python-dotenv
 gunicorn
-python-telegram-bot==23.14.2
+python-telegram-bot>=22.0,<23

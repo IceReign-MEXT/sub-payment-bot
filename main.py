@@ -1,7 +1,10 @@
 import os
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, filters, ContextTypes
+)
 
 # Load environment variables
 load_dotenv()
@@ -9,68 +12,73 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
-# Subscription plans
+# --- Subscription Plans ---
 PLANS = {
-    "Daily": "💸 Daily Plan",
-    "Weekly": "💵 Weekly Plan",
-    "Monthly": "💰 Monthly Plan",
-    "Yearly": "💎 Yearly Plan",
-    "Lifetime": "👑 Lifetime Plan"
+    "basic": {"name": "💎 Basic", "price": "$10 / month"},
+    "premium": {"name": "🔥 Premium", "price": "$25 / month"},
+    "ultimate": {"name": "👑 Ultimate", "price": "$50 / month"},
 }
 
-# Wallet addresses (for now, testing mode)
+# --- Wallets for payment ---
 ETH_WALLET = "0x5B0703825e5299b52b0d00193Ac22E20795defBa"
 SOL_WALLET = "HxmywH2gW9ezQ2nBXwurpaWsZS6YvdmLF23R9WgMAM7p"
 
+# --- Track user wallet linking ---
 USER_WALLETS = {}
 
 # /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     welcome_text = (
-        "👋 Welcome to *Ice Premium Subscriptions!*\n\n"
-        "✨ Choose your plan\n"
-        "⚡ Fast & secure payments\n"
-        "📩 Instant activation\n\n"
-        "Use /plans to view available plans 🚀"
+        f"👋 Welcome, *{user.first_name or 'User'}!*\n\n"
+        "Welcome to *Ice Premium Subscriptions* ❄️\n\n"
+        "🔥 Get access to premium features:\n"
+        "— Secure blockchain payments\n"
+        "— Auto-renewal options\n"
+        "— Multi-chain support\n\n"
+        "Use /plans to view available plans 💎"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 # /plans command
 async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton(plan, callback_data=plan)] for plan in PLANS.keys()
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📋 Choose your subscription plan below:", reply_markup=reply_markup)
+    text = "📜 *Available Plans:*\n\n"
+    for key, plan in PLANS.items():
+        text += f"{plan['name']} — {plan['price']}\n"
+    text += "\nUse /start to select a plan."
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-# Handle plan selection
+# Plan selection via inline buttons
 async def handle_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    plan_name = query.data
-    await query.edit_message_text(
-        text=(
-            f"📌 You selected {PLANS[plan_name]}\n\n"
-            f"💼 *Payment Wallet (Testing Mode)*\n"
-            f"ETH: `{ETH_WALLET}`\n"
-            f"SOL: `{SOL_WALLET}`\n\n"
-            "💡 Send your wallet address to link it."
-        ),
-        parse_mode="Markdown"
+    plan_key = query.data
+    plan = PLANS.get(plan_key, {})
+    if not plan:
+        await query.edit_message_text("⚠️ Invalid selection. Try again.")
+        return
+
+    msg = (
+        f"📌 You selected {plan['name']} ({plan['price']})\n\n"
+        f"💼 *Payment Wallets:*\n"
+        f"ETH: `{ETH_WALLET}`\n"
+        f"SOL: `{SOL_WALLET}`\n\n"
+        "💡 Send your wallet address below to link your account."
     )
+    await query.edit_message_text(msg, parse_mode="Markdown")
 
 # /help command
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
-        "💬 Available Commands:\n\n"
-        "/start - Start the bot\n"
-        "/plans - View all plans\n"
-        "/help - Show this help message\n\n"
-        "You can also send your wallet address to link it to your account."
+        "🆘 *Help Menu*\n\n"
+        "/start — Begin and select your plan\n"
+        "/plans — View available plans\n"
+        "/help — Get this help message\n\n"
+        "Just send your wallet address to link it 💳"
     )
-    await update.message.reply_text(help_text)
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
-# Handle wallet address message
+# Handle wallet linking
 async def handle_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     wallet_address = update.message.text.strip()
@@ -80,7 +88,7 @@ async def handle_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# Main
+# --- Main Entry Point ---
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -88,18 +96,10 @@ def main():
     app.add_handler(CommandHandler("plans", plans))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
-    app.add_handler(MessageHandler(filters.COMMAND, help_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.COMMAND, help_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
 
-    from telegram.ext import CallbackQueryHandler
     app.add_handler(CallbackQueryHandler(handle_plan))
 
-    print("🤖 Bot is running...")
+    print("🚀 Ice Premium Bot is now running...")
     app.run_polling()
 
 if __name__ == "__main__":

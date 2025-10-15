@@ -1,37 +1,13 @@
-# ❄️ ICE Premium Subscriptions Bot (ICEGODS / ICEMEX)
+# Sub-Payment Bot 💳
 
-**ICE Premium Subscriptions** is a smart Telegram payment bot built for automated crypto-based subscription management.  
-It supports **Solana** and **Ethereum** payments, providing fast, secure, and flexible subscription handling — daily, weekly, monthly, yearly, or lifetime.
+A professional subscription payment and management bot for Telegram and Render deployment.
 
----
+### 🚀 Features
+- Auto deploy and restart
+- Health checks and connection repair
+- AI-based payment verification
+- Subscription pricing display
+- Secure integration with Render and Telegram
+- Full monitoring and error logging
 
-## 💡 Overview
-
-This bot allows users to:
-- View available subscription plans
-- Generate unique crypto wallets for payment (SOL / ETH)
-- Automatically verify and activate subscriptions once payment is confirmed
-- Track expiration dates and receive reminders before renewal
-- Seamlessly connect to a backend dashboard for business analytics
-
----
-
-## 🧠 Core Features
-
-| Feature | Description |
-|----------|-------------|
-| 💬 Telegram Integration | Handles user interactions, commands, and wallet linking |
-| 💰 Multi-Chain Payments | Supports Solana & Ethereum for instant, low-fee transfers |
-| ⏱️ Subscription Automation | Auto-activates and tracks active subscriptions |
-| 🔒 Secure Wallets | Uses safe wallet endpoints from `.env` |
-| ☁️ Render Deployment Ready | Fully compatible with [Render.com](https://render.com) hosting |
-| 🧩 Scalable Backend | Connects easily with any dashboard or AI-based payment monitoring tool |
-
----
-
-## ⚙️ Setup Instructions
-
-### 1. Clone the Repository
-```bash
-git clone https://github.com/IceReign-MEXT/sub-payment-bot.git
-cd sub-payment-bot
+### 🧠 Structure

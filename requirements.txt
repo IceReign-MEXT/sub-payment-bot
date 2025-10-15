@@ -1,6 +1,9 @@
-fastapi
-uvicorn
-requests
-python-dotenv
-gunicorn
-python-telegram-bot>=22.0,<23
+python-telegram-bot==20.6
+web3==6.5.0
+python-dotenv==1.1.1
+asyncpg==0.27.0
+psycopg2-binary==2.9.11
+gunicorn==21.2.0
+aiohttp==3.13.0
+requests==2.32.5
+

@@ -1,20 +1,40 @@
+# Exported from Render on 2025-10-15T06:57:59Z
+version: "1"
 services:
-  - type: web
-    name: icegodsdevilgods-bot
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python3 deploy_bot.py
-    plan: free
-    envVars:
-      - key: MODE
-        value: production
-      - key: BOT_TOKEN
-        sync: false
-      - key: ADMIN_ID
-        sync: false
-      - key: ADMIN_CHAT_ID
-        sync: false
-      - key: SOLANA_RPC_URL
-        sync: false
-      - key: ETH_RPC_URL
-        sync: false
+- type: web
+  name: sub-payment-bot-1
+  runtime: python
+  repo: https://github.com/IceReign-MEXT/sub-payment-bot
+  plan: free
+  envVars:
+  - key: MODE
+    sync: false
+  - key: ENCRYPTION_KEY
+    sync: false
+  - key: DATABASE_URL
+    sync: false
+  - key: SOLANA_RPC_URL
+    sync: false
+  - key: ETH_RPC_URL
+    sync: false
+  - key: ETH_WALLET
+    sync: false
+  - key: SOL_WALLET
+    sync: false
+  - key: BTC_WALLET
+    sync: false
+  - key: SAFE_ETH_WALLET
+    sync: false
+  - key: SAFE_SOL_WALLET
+    sync: false
+  - key: ADMIN_CHAT_ID
+    sync: false
+  - key: ADMIN_ID
+    sync: false
+  - key: BOT_TOKEN
+    sync: false
+  region: oregon
+  buildCommand: pip install -r requirements.txt
+  startCommand: python3 deploy_bot.py
+  healthCheckPath: /health
+  autoDeployTrigger: commit

@@ -1,1 +1,1 @@
-web: gunicorn bot_handler:app --bind 0.0.0.0:$PORT
+web: python3 main.py

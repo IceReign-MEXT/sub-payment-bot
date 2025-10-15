@@ -1,9 +1,8 @@
-aiogram==3.10.0
-python-dotenv==1.0.1
-fastapi==0.115.0
-uvicorn==0.30.5
-requests==2.32.3
-pydantic==2.9.2
-pydantic-core==2.41.1
-asyncpg==0.29.0
-SQLAlchemy==2.0.36
+python-telegram-bot==20.7
+web3==6.5.0
+python-dotenv
+asyncpg
+psycopg2-binary
+gunicorn
+aiohttp
+requests

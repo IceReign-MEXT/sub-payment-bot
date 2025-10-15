@@ -1,16 +1,4 @@
-# Telegram bot
-python-telegram-bot>=20.3
-
-# Async PostgreSQL driver
-asyncpg>=0.27.0
-SQLAlchemy>=2.0.0
-
-# Environment variables
-python-dotenv>=1.0.0
-
-# Web server for health check
-fastapi>=0.111.0
-uvicorn[standard]>=0.24.0
-
-# Requests for RPC checks (if needed)
-requests>=2.31.0
+python-telegram-bot==20.4
+python-dotenv==1.0.0
+fastapi==0.111.1
+uvicorn==0.24.0

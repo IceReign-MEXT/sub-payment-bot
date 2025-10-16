@@ -1,1 +1,1 @@
-web: python3 main.py
+gunicorn --bind 0.0.0.0:10000 main:app

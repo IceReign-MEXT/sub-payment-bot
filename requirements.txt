@@ -1,4 +1,5 @@
 gunicorn
+uvicorn
 fastapi==0.111.1
 python-telegram-bot==20.4
 python-dotenv==1.0.1

@@ -1,19 +1,42 @@
-# render.yaml - Final Version for Marsquad Auto-Bot
-
-# This is the "Public Blueprint" for your service.
-# It is SAFE to commit this file to GitHub.
-
+# Exported from Render on 2025-10-21T18:18:42Z
 version: "1"
 services:
 - type: web
-  name: marsquad-auto-bot
-  runtime: docker
+  name: sub-payment-bot
+  runtime: python
+  repo: https://github.com/IceReign-MEXT/sub-payment-bot
   plan: free
-  region: oregon
-  
-  # This section tells Render the NAMES of the secrets your bot needs.
-  # The actual secret values MUST be set in the Render Dashboard.
   envVars:
-  - key: API_ID
-  - key: API_HASH
-  - key: SESSION_NAME
+  - key: MODE
+    sync: false
+  - key: ENCRYPTION_KEY
+    sync: false
+  - key: DATABASE_URL
+    sync: false
+  - key: ETH_RPC_URL
+    sync: false
+  - key: SOLANA_RPC_URL
+    sync: false
+  - key: ETH_WALLET
+    sync: false
+  - key: SOL_WALLET
+    sync: false
+  - key: BTC_WALLET
+    sync: false
+  - key: SAFE_ETH_WALLET
+    sync: false
+  - key: SAFE_SOL_WALLET
+    sync: false
+  - key: ADMIN_CHAT_ID
+    sync: false
+  - key: ADMIN_ID
+    sync: false
+  - key: BOT_TOKEN
+    sync: false
+  region: oregon
+  buildCommand: pip install -r requirements.txt
+  startCommand: gunicorn main:app --workers 1 --worker-class uvicorn.workers.UvicornWorker
+    --bind 0.0.0.0:$PORT
+  healthCheckPath: /health
+  autoDeployTrigger: "off"
+  rootDir: ./

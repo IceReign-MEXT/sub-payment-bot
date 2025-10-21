@@ -7,7 +7,7 @@ from telegram.ext import (
     filters, ContextTypes
 )
 from fastapi import FastAPI
-import uvicorn
+# NOTE: uvicorn is still imported, but uvicorn.run is now only for local testing
 
 # Load environment variables
 load_dotenv()
@@ -68,19 +68,35 @@ def run_bot():
     app.add_handler(CommandHandler("plans", plans))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
     print("🚀 Ice Premium Bot is now running...")
+    # NOTE: The run_polling() method is blocking.
     app.run_polling()
 
-# --- FastAPI Health Check ---
-app_web = FastAPI()
 
-@app_web.get("/health")
+# --- FastAPI Web Application ---
+# NOTE: Renamed app_web to 'app' for Gunicorn/Procfile convention
+app = FastAPI()
+
+# FIX for 404 Not Found on root path ("/")
+@app.get("/")
+async def root():
+    return {"message": "Ice Premium Bot is live and running. Check Telegram to interact."}
+
+# Existing health check
+@app.get("/health")
 async def health():
     return {"status": "ok", "bot": "running"}
 
-# --- Main ---
+
+# --- Global Startup (Runs when Gunicorn imports the module) ---
+# Starts the Telegram bot in a background thread
+threading.Thread(target=run_bot).start()
+
+
+# --- Main (Now only for local testing) ---
 if __name__ == "__main__":
-    # Run Telegram bot in a separate thread
-    threading.Thread(target=run_bot).start()
-    
-    # Run FastAPI web server for health checks
-    uvicorn.run(app_web, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    import uvicorn
+    # This block allows you to run 'python main.py' locally for testing
+    print("Starting Uvicorn server for local test...")
+    # Get port from env or default to 8000 for local testing
+    port = int(os.environ.get("PORT", 8000)) 
+    uvicorn.run(app, host="0.0.0.0", port=port)

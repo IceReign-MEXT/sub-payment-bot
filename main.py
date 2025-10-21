@@ -7,31 +7,24 @@ from telegram.ext import (
     filters, ContextTypes
 )
 from fastapi import FastAPI
-import uvicorn
-import asyncio # New import for the fix
-
-# =========================================================================
-# FIX for APScheduler/AsyncIO compatibility with Uvicorn/Gunicorn
-# Must be added at the top level before any async code runs.
-if os.name != 'nt': # Checks if not Windows
-    try:
-        # Tries to use the high-performance uvloop if available
-        import uvloop
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    except:
-        # Fallback to the default policy fix if uvloop isn't installed
-        asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-# =========================================================================
+# NOTE: uvicorn is still imported, but uvicorn.run is now only for local testing
 
 # Load environment variables
 load_dotenv()
 
-# --- Subscription Plans & Wallets ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID")
+
+# --- Subscription Plans ---
 PLANS = {
     "basic": {"name": "💎 Basic", "price": "$10 / month"},
     "premium": {"name": "🔥 Premium", "price": "$25 / month"},
     "ultimate": {"name": "👑 Ultimate", "price": "$50 / month"},
 }
+
+# --- Wallets for payment ---
+ETH_WALLET = os.getenv("ETH_WALLET")
+SOL_WALLET = os.getenv("SOL_WALLET")
 
 # --- Track user wallet linking ---
 USER_WALLETS = {}
@@ -68,31 +61,19 @@ async def handle_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# --- Telegram Bot Runner (The polling loop) ---
+# --- Telegram Bot Runner ---
 def run_bot():
-    try:
-        bot_token = os.getenv("BOT_TOKEN")
-        if not bot_token:
-             print("!!! FATAL BOT ERROR: BOT_TOKEN is not set. Cannot start bot.")
-             return
-
-        app = Application.builder().token(bot_token).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("plans", plans))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
-
-        print("🚀 Ice Premium Bot is now running...")
-        app.run_polling()
-
-    except Exception as e:
-        # THIS WILL PRINT THE ERROR TO YOUR GUNICORN CONSOLE
-        print(f"!!! FATAL BOT CONNECTION/STARTUP ERROR: {e}")
-        # Re-raise the exception to stop the thread and alert the user
-        raise
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("plans", plans))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
+    print("🚀 Ice Premium Bot is now running...")
+    # NOTE: The run_polling() method is blocking.
+    app.run_polling()
 
 
 # --- FastAPI Web Application ---
-# NOTE: The variable MUST be named 'app' for the Gunicorn command 'main:app'
+# NOTE: Renamed app_web to 'app' for Gunicorn/Procfile convention
 app = FastAPI()
 
 # FIX for 404 Not Found on root path ("/")
@@ -113,8 +94,9 @@ threading.Thread(target=run_bot).start()
 
 # --- Main (Now only for local testing) ---
 if __name__ == "__main__":
+    import uvicorn
     # This block allows you to run 'python main.py' locally for testing
     print("Starting Uvicorn server for local test...")
     # Get port from env or default to 8000 for local testing
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8000)) 
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -1,7 +1,8 @@
-# requirements.txt for Sub Payment Bot
-
-python-dotenv==1.0.1
-python-telegram-bot==20.4
+gunicorn
+uvicorn
 fastapi==0.111.1
-uvicorn[standard]==0.23.2
+python-telegram-bot==20.4
+python-dotenv==1.0.1
 requests==2.31.0
+web3
+uvloop # <--- ADD THIS LINE

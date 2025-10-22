@@ -1,0 +1,15 @@
+# Virtual Environment
+venv/
+.venv/
+
+# Environment Variables (CRITICAL: Keeps secrets out of GitHub)
+.env
+.env.*
+
+# Python Artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# OS/Editor Artifacts
+.DS_Store

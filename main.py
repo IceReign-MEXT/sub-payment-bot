@@ -12,7 +12,8 @@ import asyncio
 import random
 
 # =========================================================================
-# FIX for APScheduler/AsyncIO compatibility
+# FIX for APScheduler/AsyncIO compatibility with Uvicorn/Gunicorn
+# This prevents the silent crash of the bot thread.
 import asyncio
 if os.name != 'nt':
     try:
@@ -27,7 +28,6 @@ load_dotenv()
 
 # --- Configuration (Uses the variables from your .env) ---
 PLANS = {
-    # Using specific prices/tokens based on high-value strategy
     "basic": {"name": "💎 Basic", "price": "0.005 ETH / month", "wallet": os.getenv("ETH_WALLET")},
     "premium": {"name": "🔥 Premium", "price": "0.1 SOL / month", "wallet": os.getenv("SOL_WALLET")},
 }
@@ -71,13 +71,16 @@ def run_bot():
         app.run_polling()
 
     except Exception as e:
+        # CRUCIAL: This will now print the true connection error to your Render logs!
         print(f"!!! FATAL BOT CONNECTION/STARTUP ERROR: {e}")
         raise
 
 
 # --- FastAPI Web Application (Health Check & Root) ---
+# NOTE: The variable MUST be named 'app' for the Gunicorn command 'main:app'
 app = FastAPI()
 
+# FIX for 404 Not Found on root path ("/")
 @app.get("/")
 async def root():
     return {"message": "Minimal Payment Bot is LIVE. Use Telegram to access features."}
@@ -88,6 +91,7 @@ async def health():
 
 
 # --- Global Startup (Runs when Gunicorn imports the module) ---
+# Starts the Telegram bot in a separate thread
 threading.Thread(target=run_bot).start()
 
 # --- Main (Now only for local testing) ---

@@ -1,0 +1,7 @@
+gunicorn
+uvicorn
+fastapi
+python-telegram-bot
+python-dotenv
+web3
+uvloop

@@ -1,0 +1,50 @@
+# Render service configuration for sub-payment-bot-2 (production-ready)
+version: "1"
+services:
+  - type: web
+    name: sub-payment-bot-2
+    runtime: python
+    repo: https://github.com/IceReign-MEXT/sub-payment-bot
+    plan: free
+    envVars:
+      - key: MODE
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ETH_RPC_URL
+        sync: false
+      - key: SOLANA_RPC_URL
+        sync: false
+      - key: ETH_WALLET
+        sync: false
+      - key: SOL_WALLET
+        sync: false
+      - key: BTC_WALLET
+        sync: false
+      - key: SAFE_ETH_WALLET
+        sync: false
+      - key: SAFE_SOL_WALLET
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+    region: oregon
+    buildCommand: >
+      pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: >
+      gunicorn main:app
+      --workers 2
+      --worker-class uvicorn.workers.UvicornWorker
+      --bind 0.0.0.0:$PORT
+      --log-level info
+      --reload
+    healthCheckPath: /
+    autoDeployTrigger: commit
+    restartPolicy: always
+    deployOnPush: true
+    instanceCount: 2

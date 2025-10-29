@@ -1,5 +1,6 @@
 import os
 import threading
+import asyncio
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -7,7 +8,6 @@ from telegram.ext import (
     filters, ContextTypes
 )
 from fastapi import FastAPI
-from blockchain import eth_is_confirmed, eth_get_tx, sol_get_balance
 
 # Load environment variables
 load_dotenv()
@@ -29,7 +29,6 @@ SOL_WALLET = os.getenv("SOL_WALLET")
 # --- Track user wallet linking ---
 USER_WALLETS = {}
 
-
 # /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -44,7 +43,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
-
 # /plans command
 async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "📜 *Available Plans:*\n\n"
@@ -52,7 +50,6 @@ async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{plan['name']} — {plan['price']}\n"
     text += "\nUse /start to select a plan."
     await update.message.reply_text(text, parse_mode="Markdown")
-
 
 # Handle wallet linking
 async def handle_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,49 +61,21 @@ async def handle_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-
-# --- Confirm Transaction Command ---
-async def confirm_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("⚠️ Please provide a transaction hash.\nExample: /confirm 0x1234abcd...")
-        return
-
-    tx_hash = context.args[0].strip()
-
-    # Try Ethereum first
-    await update.message.reply_text("⏳ Checking transaction on Ethereum network...")
-    eth_tx = eth_get_tx(tx_hash)
-    if eth_tx:
-        if eth_is_confirmed(tx_hash):
-            await update.message.reply_text("✅ Ethereum transaction confirmed! Access granted.")
-        else:
-            await update.message.reply_text("⌛ Transaction found, waiting for more confirmations.")
-        return
-
-    # Try Solana
-    await update.message.reply_text("🔄 Not Ethereum — checking Solana network...")
-    try:
-        bal = await sol_get_balance(tx_hash)
-        if bal is not None:
-            await update.message.reply_text(f"✅ Solana transaction confirmed! Balance: {bal:.4f} SOL")
-        else:
-            await update.message.reply_text("❌ Invalid Solana address or transaction.")
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Error checking Solana: {e}")
-
-
 # --- Telegram Bot Runner ---
 def run_bot():
+    # Create a new event loop for this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("plans", plans))
-    app.add_handler(CommandHandler("confirm", confirm_tx))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
+
     print("🚀 Ice Premium Bot is now running...")
-    app.run_polling()
+    loop.run_until_complete(app.run_polling())
 
-
-# --- FastAPI Web App (for Render) ---
+# --- FastAPI Web Application ---
 app = FastAPI()
 
 @app.get("/")
@@ -117,14 +86,11 @@ async def root():
 async def health():
     return {"status": "ok", "bot": "running"}
 
-
-# --- Start Telegram bot in background ---
+# --- Global Startup (Runs when Gunicorn imports the module) ---
 threading.Thread(target=run_bot).start()
 
-
-# --- Local Test Mode ---
+# --- Main (for local testing only) ---
 if __name__ == "__main__":
     import uvicorn
-    print("Starting Uvicorn server for local test...")
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -1,5 +1,4 @@
 import os
-import threading
 import asyncio
 from dotenv import load_dotenv
 from telegram import Update
@@ -61,21 +60,15 @@ async def handle_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# --- Telegram Bot Runner ---
-def run_bot():
-    # Create a new event loop for this thread
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+# Build Telegram bot
+def build_bot():
+    bot_app = Application.builder().token(BOT_TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("plans", plans))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
+    return bot_app
 
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("plans", plans))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
-
-    print("🚀 Ice Premium Bot is now running...")
-    loop.run_until_complete(app.run_polling())
-
-# --- FastAPI Web Application ---
+# FastAPI web app
 app = FastAPI()
 
 @app.get("/")
@@ -86,11 +79,13 @@ async def root():
 async def health():
     return {"status": "ok", "bot": "running"}
 
-# --- Global Startup (Runs when Gunicorn imports the module) ---
-threading.Thread(target=run_bot).start()
-
-# --- Main (for local testing only) ---
+# --- Main entrypoint ---
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+
+    # Run the Telegram bot in the main thread (asyncio.run avoids threading issues)
+    bot_app = build_bot()
+    asyncio.run(bot_app.run_polling())
+
+    # Optional: Run FastAPI locally for testing (if needed)
+    # uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))

@@ -7,7 +7,7 @@ from telegram.ext import (
     filters, ContextTypes
 )
 from fastapi import FastAPI
-# NOTE: uvicorn is still imported, but uvicorn.run is now only for local testing
+from blockchain import eth_is_confirmed, eth_get_tx, sol_get_balance
 
 # Load environment variables
 load_dotenv()
@@ -29,6 +29,7 @@ SOL_WALLET = os.getenv("SOL_WALLET")
 # --- Track user wallet linking ---
 USER_WALLETS = {}
 
+
 # /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -43,6 +44,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
+
 # /plans command
 async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "📜 *Available Plans:*\n\n"
@@ -50,6 +52,7 @@ async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{plan['name']} — {plan['price']}\n"
     text += "\nUse /start to select a plan."
     await update.message.reply_text(text, parse_mode="Markdown")
+
 
 # Handle wallet linking
 async def handle_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -61,42 +64,67 @@ async def handle_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+
+# --- Confirm Transaction Command ---
+async def confirm_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚠️ Please provide a transaction hash.\nExample: /confirm 0x1234abcd...")
+        return
+
+    tx_hash = context.args[0].strip()
+
+    # Try Ethereum first
+    await update.message.reply_text("⏳ Checking transaction on Ethereum network...")
+    eth_tx = eth_get_tx(tx_hash)
+    if eth_tx:
+        if eth_is_confirmed(tx_hash):
+            await update.message.reply_text("✅ Ethereum transaction confirmed! Access granted.")
+        else:
+            await update.message.reply_text("⌛ Transaction found, waiting for more confirmations.")
+        return
+
+    # Try Solana
+    await update.message.reply_text("🔄 Not Ethereum — checking Solana network...")
+    try:
+        bal = await sol_get_balance(tx_hash)
+        if bal is not None:
+            await update.message.reply_text(f"✅ Solana transaction confirmed! Balance: {bal:.4f} SOL")
+        else:
+            await update.message.reply_text("❌ Invalid Solana address or transaction.")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Error checking Solana: {e}")
+
+
 # --- Telegram Bot Runner ---
 def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("plans", plans))
+    app.add_handler(CommandHandler("confirm", confirm_tx))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet))
     print("🚀 Ice Premium Bot is now running...")
-    # NOTE: The run_polling() method is blocking.
     app.run_polling()
 
 
-# --- FastAPI Web Application ---
-# NOTE: Renamed app_web to 'app' for Gunicorn/Procfile convention
+# --- FastAPI Web App (for Render) ---
 app = FastAPI()
 
-# FIX for 404 Not Found on root path ("/")
 @app.get("/")
 async def root():
     return {"message": "Ice Premium Bot is live and running. Check Telegram to interact."}
 
-# Existing health check
 @app.get("/health")
 async def health():
     return {"status": "ok", "bot": "running"}
 
 
-# --- Global Startup (Runs when Gunicorn imports the module) ---
-# Starts the Telegram bot in a background thread
+# --- Start Telegram bot in background ---
 threading.Thread(target=run_bot).start()
 
 
-# --- Main (Now only for local testing) ---
+# --- Local Test Mode ---
 if __name__ == "__main__":
     import uvicorn
-    # This block allows you to run 'python main.py' locally for testing
     print("Starting Uvicorn server for local test...")
-    # Get port from env or default to 8000 for local testing
-    port = int(os.environ.get("PORT", 8000)) 
+    port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

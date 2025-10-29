@@ -1,6 +1,8 @@
-gunicorn
+fastapi
 uvicorn
-fastapi==0.111.1
+gunicorn
 python-telegram-bot==20.4
-python-dotenv==1.0.1
-requests==2.31.0
+python-dotenv
+web3
+solana
+requests

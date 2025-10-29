@@ -1,8 +1,9 @@
+# requirements.txt
+python-telegram-bot
 fastapi
 uvicorn
-gunicorn
-python-telegram-bot==20.4
 python-dotenv
 web3
 solana
-requests
+asyncpg # Assuming you use asyncpg for your database access
+pydantic

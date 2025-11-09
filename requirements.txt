@@ -1,9 +1,4 @@
-# requirements.txt
 python-telegram-bot
-fastapi
-uvicorn
 python-dotenv
-web3
-solana
-asyncpg # Assuming you use asyncpg for your database access
-pydantic
+uvicorn
+gunicorn

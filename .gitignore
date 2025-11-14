@@ -1,0 +1,16 @@
+# Environment file for secrets
+.env
+
+# Python virtual environment directory
+venv/
+
+# Python cache and temporary files
+__pycache__/
+*.pyc
+*.log
+
+# Keystore/Wallet files
+keystores/
+wallet.json
+*.pem
+*.key

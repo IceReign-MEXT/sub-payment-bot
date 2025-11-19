@@ -1,24 +1,31 @@
 import os
 import logging
 import asyncio
-import aiosqlite
-from aiohttp import web # We use this to create the fake website
+import asyncpg
+import aiohttp
+from aiohttp import web
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
 
 # --- 1. CONFIGURATION ---
 load_dotenv()
 API_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_CHAT_ID")
 ETH_WALLET = os.getenv("ETH_WALLET")
-PORT = int(os.getenv("PORT", 8080)) # Render gives us a PORT, we must use it
+ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")
+INVITE_LINK = os.getenv("INVITE_LINK")
+PORT = int(os.getenv("PORT", 8080))
 
-# Validation
-if not API_TOKEN or not ADMIN_ID or not ETH_WALLET:
-    print("❌ CRITICAL ERROR: Missing keys in .env file!")
-    # We don't exit here so the web server can still start and show errors
+# Critical Check
+required_vars = [API_TOKEN, ADMIN_ID, ETH_WALLET, ETHERSCAN_KEY, DATABASE_URL, INVITE_LINK]
+if any(v is None for v in required_vars):
+    print("❌ CRITICAL ERROR: Missing variables in .env file!")
 
 try:
     ADMIN_ID = int(ADMIN_ID)
@@ -28,155 +35,196 @@ except:
 # --- 2. SETUP ---
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
-DB_NAME = "subscriptions.db"
+dp = Dispatcher(storage=MemoryStorage())
+pool = None # Database Connection
 
-# --- 3. DATABASE ENGINE ---
+class PaymentState(StatesGroup):
+    waiting_for_tx = State()
+    waiting_for_broadcast = State()
+
+# --- 3. DATABASE ENGINE (Supabase/Postgres) ---
 async def init_db():
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                status TEXT DEFAULT 'free',
-                joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        await db.commit()
+    global pool
+    try:
+        pool = await asyncpg.create_pool(DATABASE_URL)
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    status TEXT DEFAULT 'free',
+                    tx_hash TEXT UNIQUE,
+                    joined_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+        print("✅ Connected to Cloud Database")
+    except Exception as e:
+        print(f"❌ Database Connection Error: {e}")
 
 async def add_user(user_id, username):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)",
-            (user_id, username)
-        )
-        await db.commit()
+    if not pool: return
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users (user_id, username) VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET username = $2
+        """, user_id, username)
 
 async def get_user_status(user_id):
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("SELECT status FROM users WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-        return row[0] if row else "free"
+    if not pool: return "free"
+    async with pool.acquire() as conn:
+        status = await conn.fetchval("SELECT status FROM users WHERE user_id = $1", user_id)
+        return status if status else "free"
 
-async def set_premium(user_id):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE users SET status = 'premium' WHERE user_id = ?", (user_id,))
-        await db.commit()
+async def set_premium(user_id, tx_hash):
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET status = 'premium', tx_hash = $1 WHERE user_id = $2", tx_hash, user_id)
 
-# --- 4. MENUS ---
+async def check_tx_used(tx_hash):
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT user_id FROM users WHERE tx_hash = $1", tx_hash)
+
+async def get_all_users():
+    async with pool.acquire() as conn:
+        return await conn.fetch("SELECT user_id FROM users")
+
+# --- 4. ETHERSCAN LOGIC ---
+async def verify_eth_transaction(tx_hash):
+    url = f"https://api.etherscan.io/api?module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={ETHERSCAN_KEY}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            data = await response.json()
+            if "result" not in data or not data["result"]: return False, "❌ Transaction not found."
+
+            tx = data["result"]
+            if tx["to"].lower() != ETH_WALLET.lower(): return False, "❌ Wrong wallet address."
+
+            value_eth = int(tx["value"], 16) / 10**18
+            if value_eth < 0.001: return False, f"❌ Amount too low ({value_eth:.5f} ETH)."
+
+            return True, "✅ Payment Verified."
+
+# --- 5. MENUS ---
 def main_menu(status):
     buttons = []
     if status == "premium":
-        buttons.append([InlineKeyboardButton(text="🚀 ACCESS PREMIUM CHANNEL", callback_data="get_content")])
+        buttons.append([InlineKeyboardButton(text="🚀 ACCESS VIP CHANNEL", callback_data="get_content")])
     else:
         buttons.append([InlineKeyboardButton(text="💎 Buy Lifetime Access ($10)", callback_data="buy_sub")])
 
-    buttons.append([InlineKeyboardButton(text="👤 My Account", callback_data="profile")])
-    buttons.append([InlineKeyboardButton(text="📞 Support", url="https://t.me/IceReign_MEXT")])
+    buttons.append([InlineKeyboardButton(text="👤 Status", callback_data="profile")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def payment_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ I Have Sent Payment", callback_data="confirm_payment")],
+        [InlineKeyboardButton(text="🔎 Verify Transaction", callback_data="verify_tx")],
         [InlineKeyboardButton(text="🔙 Cancel", callback_data="start")]
     ])
 
-# --- 5. BOT LOGIC ---
+# --- 6. BOT HANDLERS ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await add_user(message.from_user.id, message.from_user.username)
     status = await get_user_status(message.from_user.id)
 
-    welcome_text = (
+    text = (
         f"👋 **Welcome, {message.from_user.first_name}!**\n\n"
-        "I am the official gateway to the **Exclusive VIP Community**.\n\n"
-        "🔒 **Status:** " + ("✅ PREMIUM MEMBER" if status == "premium" else "❌ FREE USER")
+        "Unlock exclusive signals and content via the **IceReign VIP**.\n\n"
+        f"🔒 **Status:** {'✅ PREMIUM' if status == 'premium' else '❌ FREE'}"
     )
-    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=main_menu(status))
+    await message.answer(text, parse_mode="Markdown", reply_markup=main_menu(status))
 
 @dp.callback_query(F.data == "start")
-async def cb_home(callback: types.CallbackQuery):
+async def cb_home(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await cmd_start(callback.message)
 
 @dp.callback_query(F.data == "profile")
 async def cb_profile(callback: types.CallbackQuery):
     status = await get_user_status(callback.from_user.id)
-    msg = f"🆔 **ID:** `{callback.from_user.id}`\n👤 **User:** @{callback.from_user.username}\n💎 **Plan:** {status.upper()}"
-    await callback.answer(msg, show_alert=True)
+    await callback.answer(f"Your Status: {status.upper()}", show_alert=True)
 
 @dp.callback_query(F.data == "buy_sub")
 async def cb_buy(callback: types.CallbackQuery):
     text = (
-        "💳 **PAYMENT INSTRUCTIONS**\n\n"
-        "Send **$10 USD** in ETH (Ethereum) to this address:\n\n"
-        f"`{ETH_WALLET}`\n\n"
-        "⚠️ **IMPORTANT:**\n"
-        "1. Copy the address by tapping it.\n"
-        "2. Make the transfer from your wallet.\n"
-        "3. Click the 'I Have Sent Payment' button below."
+        f"💳 **PAYMENT INSTRUCTIONS**\n\n"
+        f"Send **$10 ETH** to:\n`{ETH_WALLET}`\n(Tap to copy)\n\n"
+        "After sending, click **Verify Transaction** and paste your Hash."
     )
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=payment_menu())
 
-@dp.callback_query(F.data == "confirm_payment")
-async def cb_confirm(callback: types.CallbackQuery):
-    user = callback.from_user
-    admin_msg = (
-        f"💰 **NEW PAYMENT CLAIM**\n\n"
-        f"👤 User: {user.full_name} (@{user.username})\n"
-        f"🆔 ID: `{user.id}`\n\n"
-        "Check your wallet. If money received, send:\n"
-        f"`/approve {user.id}`"
-    )
-    try:
-        await bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
-        await callback.message.edit_text("✅ **Request Received!**\n\nAdmin is verifying your transaction.")
-    except Exception as e:
-        await callback.message.answer("⚠️ Error contacting admin.")
+@dp.callback_query(F.data == "verify_tx")
+async def cb_verify(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📝 **Paste your Transaction Hash (TXID) now:**")
+    await state.set_state(PaymentState.waiting_for_tx)
 
-@dp.message(Command("approve"))
-async def cmd_approve(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+@dp.message(StateFilter(PaymentState.waiting_for_tx))
+async def process_tx(message: types.Message, state: FSMContext):
+    tx_hash = message.text.strip()
+    msg = await message.reply("⏳ Checking blockchain...")
+
+    if await check_tx_used(tx_hash):
+        await msg.edit_text("❌ Error: Hash already used.")
         return
+
     try:
-        target_id = int(message.text.split()[1])
-        await set_premium(target_id)
-        await bot.send_message(target_id, "🎉 **MEMBERSHIP APPROVED!**\n\nTap /start to access content.")
-        await message.reply(f"✅ User {target_id} upgraded.")
-    except:
-        await message.reply("❌ Usage: `/approve 123456`")
+        is_valid, res_text = await verify_eth_transaction(tx_hash)
+        if is_valid:
+            await set_premium(message.from_user.id, tx_hash)
+            await msg.edit_text("🎉 **PAYMENT APPROVED!**\n\nYou are now a VIP member.")
+            await bot.send_message(ADMIN_ID, f"💰 **New Sale!**\nUser: @{message.from_user.username}\nHash: `{tx_hash}`")
+            await message.answer("👇 Click below to join:", reply_markup=main_menu("premium"))
+            await state.clear()
+        else:
+            await msg.edit_text(res_text)
+    except Exception as e:
+        print(e)
+        await msg.edit_text("⚠️ API Error. Please try again later.")
 
 @dp.callback_query(F.data == "get_content")
 async def cb_content(callback: types.CallbackQuery):
     status = await get_user_status(callback.from_user.id)
-    if status != "premium":
-        await callback.answer("⛔ You are not Premium yet!", show_alert=True)
-        return
-    await callback.message.edit_text("🔓 **ACCESS GRANTED**\n\n👉 [JOIN VIP CHANNEL](https://t.me/+YOUR_SECRET_INVITE_LINK)", parse_mode="Markdown", disable_web_page_preview=True)
+    if status == "premium":
+        await callback.message.edit_text(f"🔓 **VIP LINK:** [CLICK TO JOIN]({INVITE_LINK})", parse_mode="Markdown")
+    else:
+        await callback.answer("⛔ Payment Required", show_alert=True)
 
-# --- 6. THE FAKE WEB SERVER (FOR RENDER FREE TIER) ---
-async def health_check(request):
-    return web.Response(text="Bot is running!")
+# --- 7. ADMIN BROADCAST ---
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await message.reply("📢 Send the message you want to broadcast to all users:")
+    await state.set_state(PaymentState.waiting_for_broadcast)
 
-async def start_web_server():
+@dp.message(StateFilter(PaymentState.waiting_for_broadcast))
+async def process_broadcast(message: types.Message, state: FSMContext):
+    users = await get_all_users()
+    count = 0
+    for user in users:
+        try:
+            await bot.send_message(user['user_id'], message.text)
+            count += 1
+            await asyncio.sleep(0.1) # Anti-spam safety
+        except:
+            pass
+    await message.reply(f"✅ Message sent to {count} users.")
+    await state.clear()
+
+# --- 8. WEB SERVER (For Render) ---
+async def health(req): return web.Response(text="Bot is Alive")
+
+async def main():
+    await init_db()
+
+    # Start Web Server
     app = web.Application()
-    app.router.add_get('/', health_check)
+    app.router.add_get('/', health)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    print(f"✅ Web Server started on port {PORT}")
 
-# --- 7. MAIN RUNNER ---
-async def main():
-    await init_db()
-    # Start the fake website first
-    await start_web_server()
-    # Then start the bot
-    print("✅ Bot polling started...")
+    print("✅ Bot and Web Server Started")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Bot stopped.")
+    asyncio.run(main())

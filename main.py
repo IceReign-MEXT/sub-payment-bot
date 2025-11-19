@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import aiosqlite
+from aiohttp import web # We use this to create the fake website
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -12,17 +13,17 @@ load_dotenv()
 API_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_CHAT_ID")
 ETH_WALLET = os.getenv("ETH_WALLET")
+PORT = int(os.getenv("PORT", 8080)) # Render gives us a PORT, we must use it
 
 # Validation
 if not API_TOKEN or not ADMIN_ID or not ETH_WALLET:
     print("❌ CRITICAL ERROR: Missing keys in .env file!")
-    exit(1)
+    # We don't exit here so the web server can still start and show errors
 
 try:
     ADMIN_ID = int(ADMIN_ID)
-except ValueError:
-    print("❌ ERROR: ADMIN_CHAT_ID in .env must be a number!")
-    exit(1)
+except:
+    pass
 
 # --- 2. SETUP ---
 logging.basicConfig(level=logging.INFO)
@@ -71,7 +72,7 @@ def main_menu(status):
         buttons.append([InlineKeyboardButton(text="💎 Buy Lifetime Access ($10)", callback_data="buy_sub")])
 
     buttons.append([InlineKeyboardButton(text="👤 My Account", callback_data="profile")])
-    buttons.append([InlineKeyboardButton(text="📞 Support", url="https://t.me/IceReign_MEXT")]) # Change to your username
+    buttons.append([InlineKeyboardButton(text="📞 Support", url="https://t.me/IceReign_MEXT")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def payment_menu():
@@ -119,8 +120,6 @@ async def cb_buy(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "confirm_payment")
 async def cb_confirm(callback: types.CallbackQuery):
     user = callback.from_user
-
-    # Notify Admin
     admin_msg = (
         f"💰 **NEW PAYMENT CLAIM**\n\n"
         f"👤 User: {user.full_name} (@{user.username})\n"
@@ -128,36 +127,23 @@ async def cb_confirm(callback: types.CallbackQuery):
         "Check your wallet. If money received, send:\n"
         f"`/approve {user.id}`"
     )
-
     try:
         await bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
-        await callback.message.edit_text("✅ **Request Received!**\n\nAdmin is verifying your transaction. You will receive a notification once approved.")
+        await callback.message.edit_text("✅ **Request Received!**\n\nAdmin is verifying your transaction.")
     except Exception as e:
-        await callback.message.answer("⚠️ Error contacting admin. Please try again later.")
+        await callback.message.answer("⚠️ Error contacting admin.")
 
-# --- 6. ADMIN COMMANDS ---
 @dp.message(Command("approve"))
 async def cmd_approve(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        return # Ignore non-admins
-
+        return
     try:
         target_id = int(message.text.split()[1])
         await set_premium(target_id)
-
-        # Notify User
-        success_msg = (
-            "🎉 **MEMBERSHIP APPROVED!**\n\n"
-            "Your payment has been verified.\n"
-            "Tap /start to access the content now."
-        )
-        await bot.send_message(target_id, success_msg, parse_mode="Markdown")
-        await message.reply(f"✅ User {target_id} upgraded to PREMIUM.")
-
-    except IndexError:
-        await message.reply("❌ Use format: `/approve 123456`")
-    except Exception as e:
-        await message.reply(f"❌ Error: {e}")
+        await bot.send_message(target_id, "🎉 **MEMBERSHIP APPROVED!**\n\nTap /start to access content.")
+        await message.reply(f"✅ User {target_id} upgraded.")
+    except:
+        await message.reply("❌ Usage: `/approve 123456`")
 
 @dp.callback_query(F.data == "get_content")
 async def cb_content(callback: types.CallbackQuery):
@@ -165,20 +151,28 @@ async def cb_content(callback: types.CallbackQuery):
     if status != "premium":
         await callback.answer("⛔ You are not Premium yet!", show_alert=True)
         return
+    await callback.message.edit_text("🔓 **ACCESS GRANTED**\n\n👉 [JOIN VIP CHANNEL](https://t.me/+YOUR_SECRET_INVITE_LINK)", parse_mode="Markdown", disable_web_page_preview=True)
 
-    # --- REPLACE THE LINK BELOW WITH YOUR REAL PRODUCT ---
-    secret_msg = (
-        "🔓 **ACCESS GRANTED**\n\n"
-        "Here is your private invite link:\n"
-        "👉 [JOIN VIP CHANNEL NOW](https://t.me/+YOUR_SECRET_INVITE_LINK)\n\n"
-        "Please do not share this link."
-    )
-    await callback.message.edit_text(secret_msg, parse_mode="Markdown", disable_web_page_preview=True)
+# --- 6. THE FAKE WEB SERVER (FOR RENDER FREE TIER) ---
+async def health_check(request):
+    return web.Response(text="Bot is running!")
 
-# --- 7. RUNNER ---
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    print(f"✅ Web Server started on port {PORT}")
+
+# --- 7. MAIN RUNNER ---
 async def main():
     await init_db()
-    print("✅ Bot started! Press Ctrl+C to stop.")
+    # Start the fake website first
+    await start_web_server()
+    # Then start the bot
+    print("✅ Bot polling started...")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':

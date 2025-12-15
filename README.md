@@ -1,12 +1,11 @@
-# Telegram ETH Subscription Bot
+# ETH Subscription Bot
 
-• Real ETH verification  
-• Automatic activation  
-• Auto-expiry + removal  
-• Production ready (Render)
+Automated Telegram bot for ETH subscription management.  
+- Auto verify ETH payments  
+- Auto add to premium channels/groups  
+- Auto remove expired users
 
-## Deploy
-- Create Render Web Service
-- Add ENV variables
-- Set webhook
-- Done
+## Setup
+1. Copy `.env.example` to `.env` and fill variables.
+2. Deploy to Render.
+3. Set webhook using:

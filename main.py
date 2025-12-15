@@ -22,7 +22,6 @@ ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY")
 PREMIUM_CHANNEL_ID = int(os.getenv("PREMIUM_CHANNEL_ID"))
 PREMIUM_GROUP_ID = int(os.getenv("PREMIUM_GROUP_ID"))
 
-# Pricing (USD)
 PRICE_MONTHLY = 10
 PRICE_LIFETIME = 50
 
@@ -33,7 +32,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("SUBBOT")
 
 # =============================
-# DB
+# DATABASE
 # =============================
 conn = sqlite3.connect("subscriptions.db", check_same_thread=False)
 cur = conn.cursor()
@@ -54,7 +53,6 @@ CREATE TABLE IF NOT EXISTS payments (
     created_at TEXT
 )
 """)
-
 conn.commit()
 
 # =============================
@@ -82,23 +80,14 @@ def is_active(user_id):
 
 def activate(user_id, days=0, lifetime=False):
     if lifetime:
-        cur.execute(
-            "REPLACE INTO subscriptions VALUES (?, ?, 1)",
-            (user_id, now().isoformat())
-        )
+        cur.execute("REPLACE INTO subscriptions VALUES (?, ?, 1)", (user_id, now().isoformat()))
     else:
         exp = now() + timedelta(days=days)
-        cur.execute(
-            "REPLACE INTO subscriptions VALUES (?, ?, 0)",
-            (user_id, exp.isoformat())
-        )
+        cur.execute("REPLACE INTO subscriptions VALUES (?, ?, 0)", (user_id, exp.isoformat()))
     conn.commit()
 
 def record_payment(tx, user_id, amount):
-    cur.execute(
-        "INSERT OR IGNORE INTO payments VALUES (?, ?, ?, ?)",
-        (tx, user_id, amount, now().isoformat())
-    )
+    cur.execute("INSERT OR IGNORE INTO payments VALUES (?, ?, ?, ?)", (tx, user_id, amount, now().isoformat()))
     conn.commit()
 
 def tx_used(tx):
@@ -120,13 +109,10 @@ def verify_tx(tx_hash):
     tx = r.get("result")
     if not tx:
         return None
-
     to_addr = tx["to"]
     value = int(tx["value"], 16) / 1e18
-
     if not to_addr or to_addr.lower() != PAYMENT_WALLET:
         return None
-
     return value
 
 # =============================
@@ -165,23 +151,17 @@ async def paid(update: Update, ctx):
     if len(ctx.args) != 1:
         await update.message.reply_text("❌ Usage: /paid TX_HASH")
         return
-
     tx = ctx.args[0]
     user_id = update.effective_user.id
-
     if tx_used(tx):
         await update.message.reply_text("❌ Transaction already used.")
         return
-
     await update.message.reply_text("🔎 Verifying payment...")
-
     value = verify_tx(tx)
     if not value:
         await update.message.reply_text("❌ Invalid or unconfirmed transaction.")
         return
-
     record_payment(tx, user_id, value)
-
     if value >= PRICE_LIFETIME / 3000:
         activate(user_id, lifetime=True)
     elif value >= PRICE_MONTHLY / 3000:
@@ -189,19 +169,15 @@ async def paid(update: Update, ctx):
     else:
         await update.message.reply_text("❌ Amount too low.")
         return
-
     try:
         await bot.invite_chat_member(PREMIUM_CHANNEL_ID, user_id)
         await bot.invite_chat_member(PREMIUM_GROUP_ID, user_id)
     except:
         pass
-
     await update.message.reply_text("✅ Access granted. Welcome.")
 
 async def status(update: Update, ctx):
-    await update.message.reply_text(
-        "✅ Active" if is_active(update.effective_user.id) else "❌ Not active"
-    )
+    await update.message.reply_text("✅ Active" if is_active(update.effective_user.id) else "❌ Not active")
 
 # =============================
 # AUTO CLEANUP
@@ -210,7 +186,6 @@ async def cleanup_task():
     while True:
         cur.execute("SELECT user_id FROM subscriptions WHERE lifetime=0 AND expires_at < ?", (now().isoformat(),))
         expired = cur.fetchall()
-
         for (uid,) in expired:
             try:
                 await bot.ban_chat_member(PREMIUM_CHANNEL_ID, uid)
@@ -219,7 +194,6 @@ async def cleanup_task():
                 pass
             cur.execute("DELETE FROM subscriptions WHERE user_id=?", (uid,))
             conn.commit()
-
         await asyncio.sleep(3600)
 
 # =============================
@@ -230,7 +204,6 @@ async def webhook(req: Request):
     if WEBHOOK_SECRET:
         if req.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
             raise HTTPException(403)
-
     data = await req.json()
     await tg_app.process_update(Update.de_json(data, bot))
     return {"ok": True}
@@ -249,7 +222,6 @@ async def startup():
     tg_app.add_handler(CommandHandler("subscribe", subscribe))
     tg_app.add_handler(CommandHandler("paid", paid))
     tg_app.add_handler(CommandHandler("status", status))
-
     await tg_app.initialize()
     await tg_app.start()
     asyncio.create_task(cleanup_task())

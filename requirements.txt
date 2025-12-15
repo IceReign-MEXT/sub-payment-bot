@@ -3,4 +3,3 @@ uvicorn
 python-telegram-bot==21.7
 python-dotenv
 aiohttp
-requests

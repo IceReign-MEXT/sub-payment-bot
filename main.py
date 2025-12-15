@@ -1,184 +1,228 @@
 import os
-import sqlite3
-import requests
-from datetime import datetime, timedelta
+import datetime
 from fastapi import FastAPI, Request
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
 )
 from dotenv import load_dotenv
+import aiohttp
+import sqlite3
 
-# Load environment variables
 load_dotenv()
 
+# ---- ENV ----
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "secret")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "secret")
 PAYMENT_WALLET = os.getenv("PAYMENT_WALLET")
 ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY")
-DEBUG = os.getenv("DEBUG", "False") == "True"
 MAX_SUB_DAYS = int(os.getenv("MAX_SUB_DAYS", 365))
 
-DB_FILE = "subscriptions.db"
+# ---- DATABASE ----
+conn = sqlite3.connect("subscriptions.db", check_same_thread=False)
+c = conn.cursor()
+c.execute("""
+CREATE TABLE IF NOT EXISTS subscriptions (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    plan TEXT,
+    expires_at TEXT
+)
+""")
+conn.commit()
 
+# ---- FastAPI ----
 app = FastAPI()
 application = Application.builder().token(BOT_TOKEN).build()
 
-# ---- Database Setup ----
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS subscriptions (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            expires_at TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-init_db()
-
 # ---- Helper Functions ----
-def add_subscription(user_id, username, days):
-    expires_at = datetime.utcnow() + timedelta(days=days)
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("REPLACE INTO subscriptions (user_id, username, expires_at) VALUES (?, ?, ?)",
-              (user_id, username, expires_at.isoformat()))
-    conn.commit()
-    conn.close()
-
-def check_subscription(user_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+def is_subscribed(user_id):
     c.execute("SELECT expires_at FROM subscriptions WHERE user_id=?", (user_id,))
     row = c.fetchone()
-    conn.close()
     if row:
-        expires_at = datetime.fromisoformat(row[0])
-        if expires_at > datetime.utcnow():
-            return (True, (expires_at - datetime.utcnow()).days)
-    return (False, 0)
+        expires_at = datetime.datetime.fromisoformat(row[0])
+        return expires_at > datetime.datetime.utcnow()
+    return False
 
-def verify_eth_payment(tx_hash, expected_wallet, expected_amount=None):
-    """Verify ETH transaction via Etherscan"""
+def get_subscription_info(user_id):
+    c.execute("SELECT plan, expires_at FROM subscriptions WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    if row:
+        plan, expires_at = row
+        return plan, expires_at
+    return None, None
+
+async def verify_payment(tx_hash):
     url = f"https://api.etherscan.io/api?module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={ETHERSCAN_KEY}"
-    resp = requests.get(url)
-    if resp.status_code != 200:
-        return False
-    result = resp.json().get("result")
-    if not result:
-        return False
-    to_address = result.get("to", "").lower()
-    if to_address != expected_wallet.lower():
-        return False
-    # Optional: check amount if provided
-    if expected_amount:
-        value = int(result.get("value", "0x0"), 16) / 10**18
-        if value < expected_amount:
-            return False
-    return True
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
+            # Basic validation: check tx exists and to-address matches
+            if "result" in data and data["result"]:
+                to_address = data["result"]["to"]
+                if to_address and to_address.lower() == PAYMENT_WALLET.lower():
+                    return True
+    return False
 
-# ---- Telegram Commands ----
+def add_subscription(user_id, username, plan, days):
+    expires_at = datetime.datetime.utcnow() + datetime.timedelta(days=days)
+    c.execute("""
+    INSERT OR REPLACE INTO subscriptions(user_id, username, plan, expires_at)
+    VALUES (?, ?, ?, ?)
+    """, (user_id, username, plan, expires_at.isoformat()))
+    conn.commit()
+
+# ---- Command Handlers ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "✅ Ice Premium Subscriptions Active!\n\nCommands:\n"
-        "/plans - View plans\n"
-        "/subscribe - Payment instructions\n"
-        "/status - Check subscription"
-    )
-
-async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "💼 Subscription Plans\n\n"
+    text = (
+        "💎 *Welcome to Ice Premium Subscriptions!*\n\n"
+        "✅ Ice Premium Bot is live and ready to provide you with premium content, exclusive tips, and professional resources.\n\n"
+        "*Commands to get started:*\n"
+        "/plans – View subscription plans\n"
+        "/subscribe – Payment instructions\n"
+        "/status – Check your subscription\n\n"
+        "*Subscription Plans:*\n"
         "• Monthly – $10 (30 days)\n"
         "• Lifetime – $50\n\n"
-        "Use /subscribe to pay."
+        "Use /subscribe to pay and unlock premium content instantly.\n\n"
+        "🔒 All payments are ETH-based and auto-verified via blockchain. Admin can manually verify if needed."
     )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "💼 *Subscription Plans*\n\n"
+        "• Monthly – $10 (30 days)\n"
+        "• Lifetime – $50\n\n"
+        "Use /subscribe to get payment instructions and unlock your premium content instantly."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"💳 Payment Instructions:\n\n"
-        f"Send ETH to: {PAYMENT_WALLET}\n"
-        "After payment, send:\n/paid TX_HASH\n"
-        "Subscription activates automatically."
+    text = (
+        "💳 *Payment Instructions*\n\n"
+        f"Send ETH to: `{PAYMENT_WALLET}`\n\n"
+        "After payment, submit your transaction hash with:\n"
+        "/paid TX_HASH\n\n"
+        "Your subscription and premium content will activate automatically."
     )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    username = update.message.from_user.username or update.message.from_user.first_name
+    username = update.message.from_user.username
     args = context.args
-    if len(args) != 1:
-        await update.message.reply_text("❌ Usage: /paid TX_HASH")
+    if not args:
+        await update.message.reply_text("❌ Usage: /paid TX_HASH\nPlease provide your Ethereum transaction hash.")
         return
     tx_hash = args[0]
-
     await update.message.reply_text("🔎 Verifying transaction, please wait...")
-
-    if verify_eth_payment(tx_hash, PAYMENT_WALLET):
-        # For demo: default 30 days for monthly
-        add_subscription(user_id, username, 30)
-        await update.message.reply_text("✅ Payment verified! Subscription active for 30 days.")
+    if await verify_payment(tx_hash):
+        plan = "Monthly"  # default, can extend to detect custom amounts
+        days = 30
+        add_subscription(user_id, username, plan, days)
+        # Send premium content automatically
+        premium_text = (
+            "🎉 *Payment Verified!*\n\n"
+            "Welcome to your premium content area.\n\n"
+            "Here is your first exclusive tip:\n"
+            "_“Top strategies to maximize your Ice Premium experience…”_\n\n"
+            "Use the following commands to access more content:\n"
+            "/content1 – First set of tips\n"
+            "/content2 – Second set of resources\n"
+            "/exclusive – Exclusive premium content\n\n"
+            "Enjoy your subscription!"
+        )
+        await update.message.reply_text(premium_text, parse_mode="Markdown")
     else:
-        await update.message.reply_text("❌ Transaction could not be verified. Check TX hash.")
+        await update.message.reply_text("❌ Transaction verification failed. Check your TX_HASH and try again.")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    active, days_left = check_subscription(user_id)
-    if active:
-        await update.message.reply_text(f"✅ Active subscription: {days_left} days remaining.")
+    if is_subscribed(user_id):
+        plan, expires_at = get_subscription_info(user_id)
+        text = f"✅ Subscription Active!\nPlan: {plan}\nExpires: {expires_at}"
     else:
-        await update.message.reply_text("❌ No active subscription.")
+        text = "❌ No active subscription.\nUse /subscribe to pay and activate your subscription."
+    await update.message.reply_text(text)
+
+# ---- Premium Content Commands ----
+async def content1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if not is_subscribed(user_id):
+        await update.message.reply_text("❌ You must have an active subscription to access this content. Use /subscribe.")
+        return
+    text = (
+        "📘 *Premium Content 1*\n\n"
+        "Here are your first exclusive tips for Ice Premium users...\n"
+        "1️⃣ Tip 1\n2️⃣ Tip 2\n3️⃣ Tip 3\n\n"
+        "Use /content2 for more!"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def content2(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if not is_subscribed(user_id):
+        await update.message.reply_text("❌ You must have an active subscription to access this content. Use /subscribe.")
+        return
+    text = (
+        "📘 *Premium Content 2*\n\n"
+        "Here are the next set of professional resources and strategies...\n"
+        "1️⃣ Resource A\n2️⃣ Resource B\n3️⃣ Resource C\n\n"
+        "Use /exclusive for exclusive tips!"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def exclusive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if not is_subscribed(user_id):
+        await update.message.reply_text("❌ You must have an active subscription to access this content. Use /subscribe.")
+        return
+    text = (
+        "🌟 *Exclusive Premium Content*\n\n"
+        "Congratulations! Here is your exclusive professional content for Ice Premium subscribers only.\n"
+        "🔥 Advanced tips, guides, and strategies to maximize your experience.\n\n"
+        "Enjoy and make the most of your subscription!"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 # ---- Admin Commands ----
 async def admin_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID:
         return
-    if len(context.args) != 2:
-        await update.message.reply_text("Usage: /admin_verify USER_ID DAYS")
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("❌ Usage: /admin_verify USER_ID DAYS")
         return
-    try:
-        user_id = int(context.args[0])
-        days = int(context.args[1])
-        add_subscription(user_id, "admin_added", days)
-        await update.message.reply_text(f"✅ Subscription granted for {days} days to {user_id}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+    target_id = int(args[0])
+    days = int(args[1])
+    add_subscription(target_id, "manual", "AdminPlan", days)
+    await update.message.reply_text(f"✅ User {target_id} manually verified for {days} days.")
 
-async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
-        return
-    if len(context.args) != 1:
-        await update.message.reply_text("Usage: /admin_cancel USER_ID")
-        return
-    user_id = int(context.args[0])
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM subscriptions WHERE user_id=?", (user_id,))
-    conn.commit()
-    conn.close()
-    await update.message.reply_text(f"✅ Subscription cancelled for {user_id}")
-
-# ---- Add handlers ----
+# ---- Register Handlers ----
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("plans", plans))
 application.add_handler(CommandHandler("subscribe", subscribe))
 application.add_handler(CommandHandler("paid", paid))
 application.add_handler(CommandHandler("status", status))
+application.add_handler(CommandHandler("content1", content1))
+application.add_handler(CommandHandler("content2", content2))
+application.add_handler(CommandHandler("exclusive", exclusive))
 application.add_handler(CommandHandler("admin_verify", admin_verify))
-application.add_handler(CommandHandler("admin_cancel", admin_cancel))
 
-# ---- FastAPI webhook ----
+# ---- FastAPI Webhook ----
 @app.on_event("startup")
 async def startup():
     await application.initialize()
-    await application.bot.set_webhook(url=WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
+    await application.bot.set_webhook(
+        url=WEBHOOK_URL,
+        secret_token=WEBHOOK_SECRET,
+    )
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):

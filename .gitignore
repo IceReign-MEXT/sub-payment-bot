@@ -1,15 +1,4 @@
-# Environment
 .env
-
-# Python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-venv/
-
-# Database
 subscriptions.db
-
-# OS
-.DS_Store

@@ -4,7 +4,11 @@ import requests
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -12,59 +16,74 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "secret")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PAYMENT_WALLET = os.getenv("PAYMENT_WALLET")
 ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY")
+DEBUG = os.getenv("DEBUG", "False") == "True"
 MAX_SUB_DAYS = int(os.getenv("MAX_SUB_DAYS", 365))
+
+DB_FILE = "subscriptions.db"
 
 app = FastAPI()
 application = Application.builder().token(BOT_TOKEN).build()
 
-# Initialize SQLite DB
-DB_FILE = "subscriptions.db"
-conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-c = conn.cursor()
-c.execute(
-    """CREATE TABLE IF NOT EXISTS subscriptions (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        expires_at TEXT
-    )"""
-)
-conn.commit()
+# ---- Database Setup ----
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            expires_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# ---- Helper functions ----
-def get_subscription(user_id):
-    c.execute("SELECT expires_at FROM subscriptions WHERE user_id = ?", (user_id,))
+init_db()
+
+# ---- Helper Functions ----
+def add_subscription(user_id, username, days):
+    expires_at = datetime.utcnow() + timedelta(days=days)
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("REPLACE INTO subscriptions (user_id, username, expires_at) VALUES (?, ?, ?)",
+              (user_id, username, expires_at.isoformat()))
+    conn.commit()
+    conn.close()
+
+def check_subscription(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT expires_at FROM subscriptions WHERE user_id=?", (user_id,))
     row = c.fetchone()
+    conn.close()
     if row:
         expires_at = datetime.fromisoformat(row[0])
-        return expires_at
-    return None
+        if expires_at > datetime.utcnow():
+            return (True, (expires_at - datetime.utcnow()).days)
+    return (False, 0)
 
-def add_subscription(user_id, username, days):
-    expires_at = datetime.now() + timedelta(days=days)
-    c.execute(
-        "INSERT OR REPLACE INTO subscriptions (user_id, username, expires_at) VALUES (?, ?, ?)",
-        (user_id, username, expires_at.isoformat()),
-    )
-    conn.commit()
-
-def cancel_subscription(user_id):
-    c.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-def verify_eth_payment(tx_hash):
+def verify_eth_payment(tx_hash, expected_wallet, expected_amount=None):
+    """Verify ETH transaction via Etherscan"""
     url = f"https://api.etherscan.io/api?module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={ETHERSCAN_KEY}"
-    resp = requests.get(url).json()
-    if resp.get("result"):
-        tx = resp["result"]
-        to_address = tx.get("to", "").lower()
-        value_wei = int(tx.get("value", "0x0"), 16)
-        if to_address == PAYMENT_WALLET.lower() and value_wei > 0:
-            return True
-    return False
+    resp = requests.get(url)
+    if resp.status_code != 200:
+        return False
+    result = resp.json().get("result")
+    if not result:
+        return False
+    to_address = result.get("to", "").lower()
+    if to_address != expected_wallet.lower():
+        return False
+    # Optional: check amount if provided
+    if expected_amount:
+        value = int(result.get("value", "0x0"), 16) / 10**18
+        if value < expected_amount:
+            return False
+    return True
 
 # ---- Telegram Commands ----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,79 +104,66 @@ async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"💳 Payment Instructions:\n\nSend ETH to: {PAYMENT_WALLET}\n"
-        f"After payment, send:\n/paid TX_HASH\n"
-        f"Subscription activates automatically."
+        f"💳 Payment Instructions:\n\n"
+        f"Send ETH to: {PAYMENT_WALLET}\n"
+        "After payment, send:\n/paid TX_HASH\n"
+        "Subscription activates automatically."
     )
 
 async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    username = update.message.from_user.username or update.message.from_user.first_name
     args = context.args
-    if not args:
+    if len(args) != 1:
         await update.message.reply_text("❌ Usage: /paid TX_HASH")
         return
-
     tx_hash = args[0]
-    user_id = update.effective_user.id
-    username = update.effective_user.username or update.effective_user.first_name
 
-    verified = verify_eth_payment(tx_hash)
-    if verified:
-        add_subscription(user_id, username, MAX_SUB_DAYS)
-        await update.message.reply_text(f"✅ Payment verified!\nSubscription active for {MAX_SUB_DAYS} days.")
+    await update.message.reply_text("🔎 Verifying transaction, please wait...")
+
+    if verify_eth_payment(tx_hash, PAYMENT_WALLET):
+        # For demo: default 30 days for monthly
+        add_subscription(user_id, username, 30)
+        await update.message.reply_text("✅ Payment verified! Subscription active for 30 days.")
     else:
-        await update.message.reply_text("❌ Payment not found or incorrect. Please check your TX_HASH.")
-
-    # Notify admin
-    await application.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=f"💰 Payment Submitted\nUser: {username}\nID: {user_id}\nTX: {tx_hash}\nVerified: {verified}",
-    )
+        await update.message.reply_text("❌ Transaction could not be verified. Check TX hash.")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    expires_at = get_subscription(user_id)
-    if expires_at and expires_at > datetime.now():
-        await update.message.reply_text(f"✅ Active subscription\nExpires at: {expires_at.strftime('%Y-%m-%d %H:%M:%S')}")
+    user_id = update.message.from_user.id
+    active, days_left = check_subscription(user_id)
+    if active:
+        await update.message.reply_text(f"✅ Active subscription: {days_left} days remaining.")
     else:
         await update.message.reply_text("❌ No active subscription.")
 
 # ---- Admin Commands ----
 async def admin_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if update.message.from_user.id != ADMIN_ID:
         return
-    args = context.args
-    if len(args) != 2:
+    if len(context.args) != 2:
         await update.message.reply_text("Usage: /admin_verify USER_ID DAYS")
         return
-    user_id = int(args[0])
-    days = int(args[1])
-    username = f"user_{user_id}"
-    add_subscription(user_id, username, days)
-    await update.message.reply_text(f"✅ Subscription for {user_id} activated for {days} days.")
+    try:
+        user_id = int(context.args[0])
+        days = int(context.args[1])
+        add_subscription(user_id, "admin_added", days)
+        await update.message.reply_text(f"✅ Subscription granted for {days} days to {user_id}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
 
 async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if update.message.from_user.id != ADMIN_ID:
         return
-    args = context.args
-    if len(args) != 1:
+    if len(context.args) != 1:
         await update.message.reply_text("Usage: /admin_cancel USER_ID")
         return
-    user_id = int(args[0])
-    cancel_subscription(user_id)
-    await update.message.reply_text(f"❌ Subscription for {user_id} canceled.")
-
-async def subscriptions_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    c.execute("SELECT user_id, username, expires_at FROM subscriptions")
-    rows = c.fetchall()
-    if not rows:
-        await update.message.reply_text("No active subscriptions.")
-        return
-    message = "📃 Active Subscriptions:\n"
-    for uid, username, expires_at in rows:
-        message += f"{uid} | {username} | Expires: {expires_at}\n"
-    await update.message.reply_text(message)
+    user_id = int(context.args[0])
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM subscriptions WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"✅ Subscription cancelled for {user_id}")
 
 # ---- Add handlers ----
 application.add_handler(CommandHandler("start", start))
@@ -167,16 +173,12 @@ application.add_handler(CommandHandler("paid", paid))
 application.add_handler(CommandHandler("status", status))
 application.add_handler(CommandHandler("admin_verify", admin_verify))
 application.add_handler(CommandHandler("admin_cancel", admin_cancel))
-application.add_handler(CommandHandler("subscriptions", subscriptions_list))
 
-# ---- FastAPI Webhook ----
+# ---- FastAPI webhook ----
 @app.on_event("startup")
 async def startup():
     await application.initialize()
-    await application.bot.set_webhook(
-        url=WEBHOOK_URL,
-        secret_token=WEBHOOK_SECRET,
-    )
+    await application.bot.set_webhook(url=WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):

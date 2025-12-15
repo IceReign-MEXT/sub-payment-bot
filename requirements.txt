@@ -1,4 +1,4 @@
-6python-telegram-bot==21.6
+python-telegram-bot==21.6
 fastapi==0.115.5
 uvicorn==0.32.0
 python-dotenv==1.0.1

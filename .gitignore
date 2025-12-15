@@ -1,4 +1,5 @@
+# Environment
 .env
 __pycache__/
 *.pyc
-subscriptions.db
+*.db

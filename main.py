@@ -1,179 +1,218 @@
 import os
-import sqlite3
+import logging
+import asyncio
+import requests
 from datetime import datetime, timedelta
-import aiohttp
-from fastapi import FastAPI, Request
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, ChatPermissions
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
+import sqlite3
 
-# ------------------ Load environment ------------------
+# -----------------------------
+# Load environment
+# -----------------------------
 load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "secret")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 PAYMENT_WALLET = os.getenv("PAYMENT_WALLET")
 ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY")
+DEBUG = os.getenv("DEBUG", "False") == "True"
+MAX_SUB_DAYS = int(os.getenv("MAX_SUB_DAYS", 365))
 PREMIUM_CHANNEL_ID = int(os.getenv("PREMIUM_CHANNEL_ID"))
 PREMIUM_GROUP_ID = int(os.getenv("PREMIUM_GROUP_ID"))
-MAX_SUB_DAYS = int(os.getenv("MAX_SUB_DAYS", 365))
-DEBUG = os.getenv("DEBUG", "False") == "True"
 
-# ------------------ Database ------------------
-conn = sqlite3.connect("subscriptions.db", check_same_thread=False)
-c = conn.cursor()
-c.execute("""
-CREATE TABLE IF NOT EXISTS subscriptions (
-    user_id INTEGER PRIMARY KEY,
-    tx_hash TEXT,
-    start_date TEXT,
-    end_date TEXT
+DB_FILE = "subscriptions.db"
+
+# -----------------------------
+# Logging
+# -----------------------------
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
-""")
+logger = logging.getLogger(__name__)
+
+# -----------------------------
+# Database
+# -----------------------------
+conn = sqlite3.connect(DB_FILE)
+c = conn.cursor()
+c.execute(
+    """CREATE TABLE IF NOT EXISTS subscriptions (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        expiry TIMESTAMP
+    )"""
+)
 conn.commit()
 
-# ------------------ FastAPI & Telegram ------------------
-app = FastAPI()
-application = Application.builder().token(BOT_TOKEN).build()
-
-# ------------------ Helper Functions ------------------
-def add_subscription(user_id: int, tx_hash: str, days: int):
-    start = datetime.utcnow()
-    end = start + timedelta(days=days)
-    c.execute("""
-    INSERT OR REPLACE INTO subscriptions(user_id, tx_hash, start_date, end_date)
-    VALUES (?, ?, ?, ?)
-    """, (user_id, tx_hash, start.isoformat(), end.isoformat()))
+# -----------------------------
+# Helper functions
+# -----------------------------
+def add_subscription(user_id, username, days):
+    expiry = datetime.utcnow() + timedelta(days=days)
+    c.execute(
+        "INSERT OR REPLACE INTO subscriptions(user_id, username, expiry) VALUES (?, ?, ?)",
+        (user_id, username, expiry)
+    )
     conn.commit()
 
-def check_subscription(user_id: int):
-    c.execute("SELECT end_date FROM subscriptions WHERE user_id=?", (user_id,))
+def remove_subscription(user_id):
+    c.execute("DELETE FROM subscriptions WHERE user_id=?", (user_id,))
+    conn.commit()
+
+def check_subscription(user_id):
+    c.execute("SELECT expiry FROM subscriptions WHERE user_id=?", (user_id,))
     row = c.fetchone()
-    if not row:
-        return False
-    end_date = datetime.fromisoformat(row[0])
-    if datetime.utcnow() > end_date:
-        # Auto remove user from premium channel
-        try:
-            application.bot.ban_chat_member(PREMIUM_CHANNEL_ID, user_id)
-            application.bot.ban_chat_member(PREMIUM_GROUP_ID, user_id)
-        except Exception:
-            pass
-        c.execute("DELETE FROM subscriptions WHERE user_id=?", (user_id,))
-        conn.commit()
-        return False
-    return True
+    if row:
+        return datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S.%f") > datetime.utcnow()
+    return False
 
-async def verify_payment(tx_hash: str):
-    url = f"https://api.etherscan.io/api?module=transaction&action=gettxreceiptstatus&txhash={tx_hash}&apikey={ETHERSCAN_KEY}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            data = await resp.json()
-            status = data.get("result", {}).get("status", "0")
-            return status == "1"
+def get_expired_users():
+    c.execute("SELECT user_id FROM subscriptions WHERE expiry<=?", (datetime.utcnow(),))
+    return [row[0] for row in c.fetchall()]
 
-# ------------------ User Commands ------------------
+def verify_eth_tx(tx_hash, address=PAYMENT_WALLET):
+    """Verify ETH transaction via Etherscan API"""
+    url = f"https://api.etherscan.io/api?module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={ETHERSCAN_KEY}"
+    r = requests.get(url).json()
+    result = r.get("result")
+    if not result:
+        return False
+    to_addr = result.get("to")
+    value = int(result.get("value", "0"), 16) / 10 ** 18
+    return to_addr.lower() == address.lower() and value > 0
+
+# -----------------------------
+# Command Handlers
+# -----------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "💎 Welcome to Ice Premium Subscriptions!\n\n"
-        "✅ Access premium content, tips, and exclusive resources.\n\n"
-        "Commands:\n"
-        "/plans – View plans\n"
-        "/subscribe – Payment instructions\n"
-        "/status – Check subscription"
+    msg = (
+        f"💎 Welcome to Ice Premium Subscriptions!\n\n"
+        f"✅ Bot is live and ready to provide premium content, tips, and resources.\n\n"
+        f"Commands:\n"
+        f"/plans – View subscription plans\n"
+        f"/subscribe – Payment instructions\n"
+        f"/status – Check subscription"
     )
+    await update.message.reply_text(msg)
 
 async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "💼 Subscription Plans\n\n"
-        "• Monthly – $10 (30 days)\n"
-        "• Lifetime – $50\n\n"
-        "Use /subscribe to pay and get instant access."
+    msg = (
+        f"💼 Subscription Plans:\n\n"
+        f"• Monthly – $10 (30 days)\n"
+        f"• Lifetime – $50\n\n"
+        f"Use /subscribe to get payment instructions and unlock premium content."
     )
+    await update.message.reply_text(msg)
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    msg = (
         f"💳 Payment Instructions:\n\n"
         f"Send ETH to: {PAYMENT_WALLET}\n"
-        "After payment, send:\n"
-        "/paid TX_HASH\n"
-        "Subscription activates automatically."
+        f"After payment, send:\n"
+        f"/paid TX_HASH\n"
+        f"Subscription activates automatically."
     )
+    await update.message.reply_text(msg)
 
 async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
+    try:
+        tx_hash = context.args[0]
+        await update.message.reply_text(f"🔎 Verifying transaction {tx_hash}...")
+        user_id = update.message.from_user.id
+        username = update.message.from_user.username or update.message.from_user.first_name
+        if verify_eth_tx(tx_hash):
+            add_subscription(user_id, username, 30)  # 30 days by default
+            await update.message.reply_text("✅ Payment verified! Subscription activated.")
+            await context.bot.add_chat_member(PREMIUM_CHANNEL_ID, user_id)
+        else:
+            await update.message.reply_text("❌ Transaction not valid or not sent to correct wallet.")
+    except IndexError:
         await update.message.reply_text("❌ Usage: /paid TX_HASH")
-        return
-    tx_hash = context.args[0]
-    user_id = update.effective_user.id
-    await update.message.reply_text("🔎 Verifying transaction, please wait...")
-
-    success = await verify_payment(tx_hash)
-    if success:
-        add_subscription(user_id, tx_hash, MAX_SUB_DAYS)
-        # Add user to premium channel/group
-        try:
-            await application.bot.unban_chat_member(PREMIUM_CHANNEL_ID, user_id)
-            await application.bot.unban_chat_member(PREMIUM_GROUP_ID, user_id)
-        except Exception:
-            pass
-        await update.message.reply_text("✅ Payment verified! Subscription activated.")
-    else:
-        await update.message.reply_text("❌ Payment not verified. Check your TX_HASH.")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    user_id = update.message.from_user.id
     if check_subscription(user_id):
-        await update.message.reply_text("✅ You have an active subscription!")
+        await update.message.reply_text("✅ You have an active subscription.")
     else:
         await update.message.reply_text("❌ No active subscription.")
 
-# ------------------ Admin Commands ------------------
 async def admin_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if update.message.from_user.id != ADMIN_ID:
         return
-    if len(context.args) < 2:
+    try:
+        user_id = int(context.args[0])
+        days = int(context.args[1])
+        username = "Admin"  # optional
+        add_subscription(user_id, username, days)
+        await update.message.reply_text(f"✅ Subscription for {user_id} verified for {days} days.")
+        await context.bot.add_chat_member(PREMIUM_CHANNEL_ID, user_id)
+    except:
         await update.message.reply_text("❌ Usage: /admin_verify USER_ID DAYS")
-        return
-    user_id = int(context.args[0])
-    days = int(context.args[1])
-    add_subscription(user_id, "MANUAL", days)
-    await update.message.reply_text(f"✅ Subscription verified for {days} days.")
 
 async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if update.message.from_user.id != ADMIN_ID:
         return
-    if not context.args:
+    try:
+        user_id = int(context.args[0])
+        remove_subscription(user_id)
+        await update.message.reply_text(f"✅ Subscription for {user_id} canceled.")
+        await context.bot.ban_chat_member(PREMIUM_CHANNEL_ID, user_id)
+        await context.bot.unban_chat_member(PREMIUM_CHANNEL_ID, user_id)
+    except:
         await update.message.reply_text("❌ Usage: /admin_cancel USER_ID")
-        return
-    user_id = int(context.args[0])
-    c.execute("DELETE FROM subscriptions WHERE user_id=?", (user_id,))
-    conn.commit()
-    await update.message.reply_text(f"✅ Subscription cancelled for user {user_id}.")
 
-# ------------------ Add Handlers ------------------
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("plans", plans))
-application.add_handler(CommandHandler("subscribe", subscribe))
-application.add_handler(CommandHandler("paid", paid))
-application.add_handler(CommandHandler("status", status))
-application.add_handler(CommandHandler("admin_verify", admin_verify))
-application.add_handler(CommandHandler("admin_cancel", admin_cancel))
+# -----------------------------
+# Scheduler for expired users
+# -----------------------------
+async def remove_expired_users(app):
+    expired_users = get_expired_users()
+    for user_id in expired_users:
+        remove_subscription(user_id)
+        try:
+            await app.bot.ban_chat_member(PREMIUM_CHANNEL_ID, user_id)
+            await app.bot.unban_chat_member(PREMIUM_CHANNEL_ID, user_id)
+            logger.info(f"Removed expired subscription: {user_id}")
+        except:
+            logger.warning(f"Failed to remove user: {user_id}")
 
-# ------------------ FastAPI Webhook ------------------
-@app.on_event("startup")
-async def startup():
-    await application.initialize()
-    await application.bot.set_webhook(url=WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
+# -----------------------------
+# Main
+# -----------------------------
+if __name__ == "__main__":
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
-    update = Update.de_json(await request.json(), application.bot)
-    await application.process_update(update)
-    return {"ok": True}
+    # Commands
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("plans", plans))
+    application.add_handler(CommandHandler("subscribe", subscribe))
+    application.add_handler(CommandHandler("paid", paid))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("admin_verify", admin_verify))
+    application.add_handler(CommandHandler("admin_cancel", admin_cancel))
 
-@app.get("/health")
-async def health():
-    return {"ok": True}
+    # Scheduler
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(remove_expired_users, "interval", minutes=10, args=[application])
+    scheduler.start()
+
+    # Webhook
+    port = int(os.environ.get("PORT", 8000))
+    logger.info(f"Starting bot on port {port}")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=WEBHOOK_SECRET,
+        webhook_url=f"{WEBHOOK_URL}/{WEBHOOK_SECRET}"
+    )

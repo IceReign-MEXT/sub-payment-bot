@@ -1,5 +1,4 @@
-fastapi
-uvicorn
-python-telegram-bot==21.7
-python-dotenv
-aiohttp
+python-telegram-bot==21.6
+requests==2.32.3
+apscheduler==3.10.5
+python-dotenv==1.0.0

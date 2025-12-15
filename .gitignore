@@ -1,4 +1,13 @@
+# Environment variables
 .env
-venv/
+
+# Python
 __pycache__/
-subscriptions.db
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# OS
+.DS_Store

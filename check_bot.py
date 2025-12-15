@@ -1,8 +1,5 @@
 import os
 
-print("🔍 Checking required files...")
-
-# Required files for deployment
 required_files = [
     "main.py",
     "requirements.txt",
@@ -10,43 +7,47 @@ required_files = [
     ".gitignore",
 ]
 
-# Optional files
 optional_files = [
     ".env.example",
     "README.md",
     "License",
     "subscriptions.db",
+    "check_bot.py",
+    "get_group_id.py",
 ]
 
-# Check required files
-all_good = True
-for file in required_files:
-    if os.path.isfile(file):
-        print(f"✅ Found: {file}")
-    else:
-        print(f"❌ Missing: {file}")
-        all_good = False
+print("🔍 Checking required files...")
+all_found = True
 
-# Check .env locally
-if os.path.isfile(".env"):
+for f in required_files:
+    try:
+        with open(f):
+            print(f"✅ Found: {f}")
+    except FileNotFoundError:
+        print(f"❌ Missing: {f}")
+        all_found = False
+
+# Check .env presence
+if os.path.exists(".env"):
     print("✅ .env exists locally (good, do NOT push)")
 else:
-    print("⚠️ .env missing locally!")
+    print("❌ .env not found. You need to create it from .env.example")
+    all_found = False
 
-# Check if .env is ignored
-with open(".gitignore", "r") as f:
-    gitignore = f.read()
-if ".env" in gitignore:
-    print("✅ .env is in .gitignore (safe to push)")
-else:
-    print("⚠️ .env is NOT in .gitignore! Add it to keep secrets safe.")
+# Check .env is in .gitignore
+with open(".gitignore") as gi:
+    gitignore_content = gi.read()
+    if ".env" in gitignore_content:
+        print("✅ .env is in .gitignore (safe to push)")
+    else:
+        print("⚠️ .env not in .gitignore (add it before pushing)")
 
-# Optional review
-detected_files = [f for f in optional_files if os.path.isfile(f)]
-if detected_files:
-    print(f"⚠️ Other files detected (optional review): {detected_files}")
+# Optional files review
+present_optional = [f for f in optional_files if os.path.exists(f)]
+if present_optional:
+    print(f"⚠️ Other files detected (optional review): {present_optional}")
 
-if all_good:
+if all_found:
     print("\n🎯 All required files are present. Ready to push!")
 else:
-    print("\n❌ Missing required files. Fix before pushing!")
+    print("\n❌ Some required files are missing. Fix before pushing!")

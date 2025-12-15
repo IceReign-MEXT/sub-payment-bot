@@ -1,169 +1,255 @@
 import os
+import sqlite3
+import logging
 import asyncio
-from datetime import datetime, timedelta
+import requests
+from datetime import datetime, timedelta, timezone
+
 from fastapi import FastAPI, Request, HTTPException
 from telegram import Update, Bot
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import requests
-import sqlite3
-from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Load environment
-load_dotenv()
-
+# =============================
+# ENV
+# =============================
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PAYMENT_WALLET = os.getenv("PAYMENT_WALLET")
+
+PAYMENT_WALLET = os.getenv("PAYMENT_WALLET").lower()
 ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY")
-DEBUG = os.getenv("DEBUG") == "True"
-MAX_SUB_DAYS = int(os.getenv("MAX_SUB_DAYS"))
+
 PREMIUM_CHANNEL_ID = int(os.getenv("PREMIUM_CHANNEL_ID"))
 PREMIUM_GROUP_ID = int(os.getenv("PREMIUM_GROUP_ID"))
 
-# FastAPI App
-app = FastAPI()
+# Pricing (USD)
+PRICE_MONTHLY = 10
+PRICE_LIFETIME = 50
 
-# Bot Setup
-bot = Bot(TOKEN)
-application = ApplicationBuilder().token(TOKEN).build()
+# =============================
+# LOGGING
+# =============================
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("SUBBOT")
 
-# Database
+# =============================
+# DB
+# =============================
 conn = sqlite3.connect("subscriptions.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("""CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    expiry TIMESTAMP
-                )""")
+cur = conn.cursor()
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS subscriptions (
+    user_id INTEGER PRIMARY KEY,
+    expires_at TEXT,
+    lifetime INTEGER DEFAULT 0
+)
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS payments (
+    tx_hash TEXT PRIMARY KEY,
+    user_id INTEGER,
+    amount REAL,
+    created_at TEXT
+)
+""")
+
 conn.commit()
 
-# Scheduler for auto-removal
-scheduler = AsyncIOScheduler()
+# =============================
+# BOT / API
+# =============================
+bot = Bot(TOKEN)
+tg_app = Application.builder().token(TOKEN).build()
+api = FastAPI()
 
-def check_expired_users():
-    now = datetime.utcnow()
-    cursor.execute("SELECT user_id, expiry FROM users")
-    for user_id, expiry in cursor.fetchall():
-        if expiry and datetime.fromisoformat(expiry) < now:
-            try:
-                bot.kick_chat_member(chat_id=PREMIUM_GROUP_ID, user_id=user_id)
-            except Exception as e:
-                print(f"Failed to remove {user_id}: {e}")
-            cursor.execute("DELETE FROM users WHERE user_id=?", (user_id,))
+# =============================
+# HELPERS
+# =============================
+def now():
+    return datetime.now(timezone.utc)
+
+def is_active(user_id):
+    cur.execute("SELECT expires_at, lifetime FROM subscriptions WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        return False
+    expires, lifetime = row
+    if lifetime:
+        return True
+    return datetime.fromisoformat(expires) > now()
+
+def activate(user_id, days=0, lifetime=False):
+    if lifetime:
+        cur.execute(
+            "REPLACE INTO subscriptions VALUES (?, ?, 1)",
+            (user_id, now().isoformat())
+        )
+    else:
+        exp = now() + timedelta(days=days)
+        cur.execute(
+            "REPLACE INTO subscriptions VALUES (?, ?, 0)",
+            (user_id, exp.isoformat())
+        )
     conn.commit()
 
-scheduler.add_job(check_expired_users, "interval", minutes=5)
-scheduler.start()
+def record_payment(tx, user_id, amount):
+    cur.execute(
+        "INSERT OR IGNORE INTO payments VALUES (?, ?, ?, ?)",
+        (tx, user_id, amount, now().isoformat())
+    )
+    conn.commit()
 
-# ----------------------------
-# Command Handlers
-# ----------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def tx_used(tx):
+    cur.execute("SELECT 1 FROM payments WHERE tx_hash=?", (tx,))
+    return cur.fetchone() is not None
+
+# =============================
+# ETH VERIFICATION
+# =============================
+def verify_tx(tx_hash):
+    url = "https://api.etherscan.io/api"
+    params = {
+        "module": "proxy",
+        "action": "eth_getTransactionByHash",
+        "txhash": tx_hash,
+        "apikey": ETHERSCAN_KEY
+    }
+    r = requests.get(url, params=params, timeout=15).json()
+    tx = r.get("result")
+    if not tx:
+        return None
+
+    to_addr = tx["to"]
+    value = int(tx["value"], 16) / 1e18
+
+    if not to_addr or to_addr.lower() != PAYMENT_WALLET:
+        return None
+
+    return value
+
+# =============================
+# COMMANDS
+# =============================
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "💎 Welcome to Ice Premium Subscriptions!\n\n"
-        "✅ Ice Premium Bot is live and ready to provide premium content.\n\n"
-        "Commands:\n"
-        "/plans - View subscription plans\n"
-        "/subscribe - Payment instructions\n"
-        "/status - Check your subscription"
+        "💎 *Premium Access Bot*\n\n"
+        "Automated • Secure • Instant\n\n"
+        "/plans – Prices\n"
+        "/subscribe – How to pay\n"
+        "/status – Check access",
+        parse_mode="Markdown"
     )
 
-async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def plans(update: Update, ctx):
     await update.message.reply_text(
-        "💼 Subscription Plans:\n\n"
-        "• Monthly – $10 (30 days)\n"
-        "• Lifetime – $50\n\n"
-        "Use /subscribe to pay and unlock premium content."
+        f"💼 *Plans*\n\n"
+        f"• Monthly – ${PRICE_MONTHLY}\n"
+        f"• Lifetime – ${PRICE_LIFETIME}\n\n"
+        "Crypto only. Instant access.",
+        parse_mode="Markdown"
     )
 
-async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def subscribe(update: Update, ctx):
     await update.message.reply_text(
-        f"💳 Payment Instructions:\n\n"
-        f"Send ETH to: {PAYMENT_WALLET}\n"
-        "After payment, send /paid TX_HASH\n"
-        "Subscription activates automatically."
+        f"💳 *Payment*\n\n"
+        f"Send ETH to:\n`{PAYMENT_WALLET}`\n\n"
+        f"Then submit:\n`/paid TX_HASH`\n\n"
+        f"Monthly: ${PRICE_MONTHLY}\n"
+        f"Lifetime: ${PRICE_LIFETIME}",
+        parse_mode="Markdown"
     )
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    cursor.execute("SELECT expiry FROM users WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    if row:
-        expiry = datetime.fromisoformat(row[0])
-        await update.message.reply_text(f"✅ Active subscription until {expiry}")
-    else:
-        await update.message.reply_text("❌ No active subscription.")
-
-async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 1:
+async def paid(update: Update, ctx):
+    if len(ctx.args) != 1:
         await update.message.reply_text("❌ Usage: /paid TX_HASH")
         return
-    tx_hash = context.args[0]
-    await update.message.reply_text("🔎 Verifying transaction, please wait...")
-    # Call Etherscan API
-    url = f"https://api.etherscan.io/api?module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={ETHERSCAN_KEY}"
-    r = requests.get(url).json()
-    if r["result"] and r["result"]["to"].lower() == PAYMENT_WALLET.lower():
-        # success
-        user_id = update.effective_user.id
-        expiry = datetime.utcnow() + timedelta(days=30)
-        cursor.execute("INSERT OR REPLACE INTO users(user_id, expiry) VALUES (?, ?)", (user_id, expiry.isoformat()))
-        conn.commit()
-        # Add to premium channel/group
-        try:
-            await bot.unban_chat_member(chat_id=PREMIUM_GROUP_ID, user_id=user_id)
-        except:
-            pass
-        await update.message.reply_text("✅ Payment verified! Subscription activated.")
+
+    tx = ctx.args[0]
+    user_id = update.effective_user.id
+
+    if tx_used(tx):
+        await update.message.reply_text("❌ Transaction already used.")
+        return
+
+    await update.message.reply_text("🔎 Verifying payment...")
+
+    value = verify_tx(tx)
+    if not value:
+        await update.message.reply_text("❌ Invalid or unconfirmed transaction.")
+        return
+
+    record_payment(tx, user_id, value)
+
+    if value >= PRICE_LIFETIME / 3000:
+        activate(user_id, lifetime=True)
+    elif value >= PRICE_MONTHLY / 3000:
+        activate(user_id, days=30)
     else:
-        await update.message.reply_text("❌ Payment not found or invalid.")
-
-# Admin verify manually
-async def admin_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Amount too low.")
         return
-    if len(context.args) != 2:
-        await update.message.reply_text("❌ Usage: /admin_verify USER_ID DAYS")
-        return
-    user_id = int(context.args[0])
-    days = int(context.args[1])
-    expiry = datetime.utcnow() + timedelta(days=days)
-    cursor.execute("INSERT OR REPLACE INTO users(user_id, expiry) VALUES (?, ?)", (user_id, expiry.isoformat()))
-    conn.commit()
-    await update.message.reply_text(f"✅ Subscription manually activated for {days} days.")
 
-# ----------------------------
-# Add Handlers
-# ----------------------------
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("plans", plans))
-application.add_handler(CommandHandler("subscribe", subscribe))
-application.add_handler(CommandHandler("status", status))
-application.add_handler(CommandHandler("paid", paid))
-application.add_handler(CommandHandler("admin_verify", admin_verify))
+    try:
+        await bot.invite_chat_member(PREMIUM_CHANNEL_ID, user_id)
+        await bot.invite_chat_member(PREMIUM_GROUP_ID, user_id)
+    except:
+        pass
 
-# ----------------------------
-# FastAPI Webhook Endpoint
-# ----------------------------
-@app.post("/webhook")
+    await update.message.reply_text("✅ Access granted. Welcome.")
+
+async def status(update: Update, ctx):
+    await update.message.reply_text(
+        "✅ Active" if is_active(update.effective_user.id) else "❌ Not active"
+    )
+
+# =============================
+# AUTO CLEANUP
+# =============================
+async def cleanup_task():
+    while True:
+        cur.execute("SELECT user_id FROM subscriptions WHERE lifetime=0 AND expires_at < ?", (now().isoformat(),))
+        expired = cur.fetchall()
+
+        for (uid,) in expired:
+            try:
+                await bot.ban_chat_member(PREMIUM_CHANNEL_ID, uid)
+                await bot.unban_chat_member(PREMIUM_CHANNEL_ID, uid)
+            except:
+                pass
+            cur.execute("DELETE FROM subscriptions WHERE user_id=?", (uid,))
+            conn.commit()
+
+        await asyncio.sleep(3600)
+
+# =============================
+# WEBHOOK
+# =============================
+@api.post("/webhook")
 async def webhook(req: Request):
-    secret = req.headers.get("X-Telegram-Bot-Api-Secret-Token")
-    if secret != WEBHOOK_SECRET:
-        raise HTTPException(status_code=403)
+    if WEBHOOK_SECRET:
+        if req.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+            raise HTTPException(403)
+
     data = await req.json()
-    update = Update.de_json(data, bot)
-    await application.update_queue.put(update)
+    await tg_app.process_update(Update.de_json(data, bot))
     return {"ok": True}
 
-@app.get("/health")
-async def health():
+@api.get("/health")
+def health():
     return {"status": "ok"}
 
-# ----------------------------
-# Startup
-# ----------------------------
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+# =============================
+# STARTUP
+# =============================
+@api.on_event("startup")
+async def startup():
+    tg_app.add_handler(CommandHandler("start", start))
+    tg_app.add_handler(CommandHandler("plans", plans))
+    tg_app.add_handler(CommandHandler("subscribe", subscribe))
+    tg_app.add_handler(CommandHandler("paid", paid))
+    tg_app.add_handler(CommandHandler("status", status))
+
+    await tg_app.initialize()
+    await tg_app.start()
+    asyncio.create_task(cleanup_task())

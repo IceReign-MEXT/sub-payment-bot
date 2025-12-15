@@ -1,6 +1,4 @@
 python-telegram-bot==21.6
-fastapi==0.113.0
-uvicorn==0.23.2
-requests==2.32.3
-apscheduler==3.10.4
-python-dotenv==1.0.0
+fastapi
+uvicorn
+requests

@@ -1,230 +1,169 @@
 import os
-import logging
-import asyncio
-import asyncpg
-import aiohttp
-from aiohttp import web
+import aiosqlite
+from datetime import datetime, timedelta
+from fastapi import FastAPI, Request
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, StateFilter
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.memory import MemoryStorage
 
-# --- 1. CONFIGURATION ---
 load_dotenv()
-API_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = os.getenv("ADMIN_CHAT_ID")
-ETH_WALLET = os.getenv("ETH_WALLET")
-ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
-INVITE_LINK = os.getenv("INVITE_LINK")
-PORT = int(os.getenv("PORT", 8080))
 
-# Critical Check
-required_vars = [API_TOKEN, ADMIN_ID, ETH_WALLET, ETHERSCAN_KEY, DATABASE_URL, INVITE_LINK]
-if any(v is None for v in required_vars):
-    print("❌ CRITICAL ERROR: Missing variables in .env file!")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "supersecret")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+PAYMENT_WALLET = os.getenv("PAYMENT_WALLET")
 
-try:
-    ADMIN_ID = int(ADMIN_ID)
-except:
-    pass
+DB_FILE = "subscriptions.db"
 
-# --- 2. SETUP ---
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
-pool = None # Database Connection
+app = FastAPI()
+application = Application.builder().token(BOT_TOKEN).build()
 
-class PaymentState(StatesGroup):
-    waiting_for_tx = State()
-    waiting_for_broadcast = State()
-
-# --- 3. DATABASE ENGINE (Supabase/Postgres) ---
+# ---------------- DATABASE ----------------
 async def init_db():
-    global pool
-    try:
-        pool = await asyncpg.create_pool(DATABASE_URL)
-        async with pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    username TEXT,
-                    status TEXT DEFAULT 'free',
-                    tx_hash TEXT UNIQUE,
-                    joined_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
-        print("✅ Connected to Cloud Database")
-    except Exception as e:
-        print(f"❌ Database Connection Error: {e}")
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                user_id INTEGER PRIMARY KEY,
+                expires_at TEXT
+            )
+        """)
+        await db.commit()
 
-async def add_user(user_id, username):
-    if not pool: return
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users (user_id, username) VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE SET username = $2
-        """, user_id, username)
+async def set_subscription(user_id: int, days: int):
+    expires = datetime.utcnow() + timedelta(days=days)
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute(
+            "REPLACE INTO subscriptions (user_id, expires_at) VALUES (?, ?)",
+            (user_id, expires.isoformat())
+        )
+        await db.commit()
 
-async def get_user_status(user_id):
-    if not pool: return "free"
-    async with pool.acquire() as conn:
-        status = await conn.fetchval("SELECT status FROM users WHERE user_id = $1", user_id)
-        return status if status else "free"
+async def get_subscription(user_id: int):
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute(
+            "SELECT expires_at FROM subscriptions WHERE user_id = ?",
+            (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return datetime.fromisoformat(row[0])
 
-async def set_premium(user_id, tx_hash):
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE users SET status = 'premium', tx_hash = $1 WHERE user_id = $2", tx_hash, user_id)
-
-async def check_tx_used(tx_hash):
-    async with pool.acquire() as conn:
-        return await conn.fetchrow("SELECT user_id FROM users WHERE tx_hash = $1", tx_hash)
-
-async def get_all_users():
-    async with pool.acquire() as conn:
-        return await conn.fetch("SELECT user_id FROM users")
-
-# --- 4. ETHERSCAN LOGIC ---
-async def verify_eth_transaction(tx_hash):
-    url = f"https://api.etherscan.io/api?module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={ETHERSCAN_KEY}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            data = await response.json()
-            if "result" not in data or not data["result"]: return False, "❌ Transaction not found."
-
-            tx = data["result"]
-            if tx["to"].lower() != ETH_WALLET.lower(): return False, "❌ Wrong wallet address."
-
-            value_eth = int(tx["value"], 16) / 10**18
-            if value_eth < 0.001: return False, f"❌ Amount too low ({value_eth:.5f} ETH)."
-
-            return True, "✅ Payment Verified."
-
-# --- 5. MENUS ---
-def main_menu(status):
-    buttons = []
-    if status == "premium":
-        buttons.append([InlineKeyboardButton(text="🚀 ACCESS VIP CHANNEL", callback_data="get_content")])
-    else:
-        buttons.append([InlineKeyboardButton(text="💎 Buy Lifetime Access ($10)", callback_data="buy_sub")])
-
-    buttons.append([InlineKeyboardButton(text="👤 Status", callback_data="profile")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def payment_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔎 Verify Transaction", callback_data="verify_tx")],
-        [InlineKeyboardButton(text="🔙 Cancel", callback_data="start")]
-    ])
-
-# --- 6. BOT HANDLERS ---
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await add_user(message.from_user.id, message.from_user.username)
-    status = await get_user_status(message.from_user.id)
-
-    text = (
-        f"👋 **Welcome, {message.from_user.first_name}!**\n\n"
-        "Unlock exclusive signals and content via the **IceReign VIP**.\n\n"
-        f"🔒 **Status:** {'✅ PREMIUM' if status == 'premium' else '❌ FREE'}"
+# ---------------- COMMANDS ----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "✅ *Subscription Bot Active*\n\n"
+        "Commands:\n"
+        "/plans – View plans\n"
+        "/subscribe – Payment instructions\n"
+        "/status – Check subscription",
+        parse_mode="Markdown"
     )
-    await message.answer(text, parse_mode="Markdown", reply_markup=main_menu(status))
 
-@dp.callback_query(F.data == "start")
-async def cb_home(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await cmd_start(callback.message)
-
-@dp.callback_query(F.data == "profile")
-async def cb_profile(callback: types.CallbackQuery):
-    status = await get_user_status(callback.from_user.id)
-    await callback.answer(f"Your Status: {status.upper()}", show_alert=True)
-
-@dp.callback_query(F.data == "buy_sub")
-async def cb_buy(callback: types.CallbackQuery):
-    text = (
-        f"💳 **PAYMENT INSTRUCTIONS**\n\n"
-        f"Send **$10 ETH** to:\n`{ETH_WALLET}`\n(Tap to copy)\n\n"
-        "After sending, click **Verify Transaction** and paste your Hash."
+async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "💼 *Subscription Plans*\n\n"
+        "• Monthly – $10 (30 days)\n"
+        "• Lifetime – $50\n\n"
+        "Use /subscribe to pay.",
+        parse_mode="Markdown"
     )
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=payment_menu())
 
-@dp.callback_query(F.data == "verify_tx")
-async def cb_verify(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("📝 **Paste your Transaction Hash (TXID) now:**")
-    await state.set_state(PaymentState.waiting_for_tx)
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "💳 *Payment Instructions*\n\n"
+        f"Send payment to ETH wallet:\n\n`{PAYMENT_WALLET}`\n\n"
+        "After payment, send:\n"
+        "`/paid TX_HASH`\n\n"
+        "Admin will verify manually.",
+        parse_mode="Markdown"
+    )
 
-@dp.message(StateFilter(PaymentState.waiting_for_tx))
-async def process_tx(message: types.Message, state: FSMContext):
-    tx_hash = message.text.strip()
-    msg = await message.reply("⏳ Checking blockchain...")
-
-    if await check_tx_used(tx_hash):
-        await msg.edit_text("❌ Error: Hash already used.")
+async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Usage: /paid TX_HASH")
         return
 
-    try:
-        is_valid, res_text = await verify_eth_transaction(tx_hash)
-        if is_valid:
-            await set_premium(message.from_user.id, tx_hash)
-            await msg.edit_text("🎉 **PAYMENT APPROVED!**\n\nYou are now a VIP member.")
-            await bot.send_message(ADMIN_ID, f"💰 **New Sale!**\nUser: @{message.from_user.username}\nHash: `{tx_hash}`")
-            await message.answer("👇 Click below to join:", reply_markup=main_menu("premium"))
-            await state.clear()
-        else:
-            await msg.edit_text(res_text)
-    except Exception as e:
-        print(e)
-        await msg.edit_text("⚠️ API Error. Please try again later.")
+    tx = context.args[0]
+    user = update.message.from_user
 
-@dp.callback_query(F.data == "get_content")
-async def cb_content(callback: types.CallbackQuery):
-    status = await get_user_status(callback.from_user.id)
-    if status == "premium":
-        await callback.message.edit_text(f"🔓 **VIP LINK:** [CLICK TO JOIN]({INVITE_LINK})", parse_mode="Markdown")
-    else:
-        await callback.answer("⛔ Payment Required", show_alert=True)
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            "💰 *New Payment Submitted*\n\n"
+            f"User: {user.full_name}\n"
+            f"ID: `{user.id}`\n"
+            f"TX: `{tx}`"
+        ),
+        parse_mode="Markdown"
+    )
 
-# --- 7. ADMIN BROADCAST ---
-@dp.message(Command("broadcast"))
-async def cmd_broadcast(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
-    await message.reply("📢 Send the message you want to broadcast to all users:")
-    await state.set_state(PaymentState.waiting_for_broadcast)
+    await update.message.reply_text(
+        "✅ Payment submitted.\n\n"
+        "Verification in progress."
+    )
 
-@dp.message(StateFilter(PaymentState.waiting_for_broadcast))
-async def process_broadcast(message: types.Message, state: FSMContext):
-    users = await get_all_users()
-    count = 0
-    for user in users:
-        try:
-            await bot.send_message(user['user_id'], message.text)
-            count += 1
-            await asyncio.sleep(0.1) # Anti-spam safety
-        except:
-            pass
-    await message.reply(f"✅ Message sent to {count} users.")
-    await state.clear()
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sub = await get_subscription(update.message.from_user.id)
+    if not sub:
+        await update.message.reply_text("❌ No active subscription.")
+        return
 
-# --- 8. WEB SERVER (For Render) ---
-async def health(req): return web.Response(text="Bot is Alive")
+    if sub < datetime.utcnow():
+        await update.message.reply_text("⚠️ Subscription expired.")
+        return
 
-async def main():
+    await update.message.reply_text(
+        f"✅ Active until:\n{sub.strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+
+async def admin_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID:
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "Usage: /admin_verify USER_ID DAYS"
+        )
+        return
+
+    user_id = int(context.args[0])
+    days = int(context.args[1])
+
+    await set_subscription(user_id, days)
+    await update.message.reply_text(
+        f"✅ User {user_id} verified for {days} days."
+    )
+
+# ---------------- HANDLERS ----------------
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("plans", plans))
+application.add_handler(CommandHandler("subscribe", subscribe))
+application.add_handler(CommandHandler("paid", paid))
+application.add_handler(CommandHandler("status", status))
+application.add_handler(CommandHandler("admin_verify", admin_verify))
+
+# ---------------- FASTAPI ----------------
+@app.on_event("startup")
+async def startup():
     await init_db()
+    await application.initialize()
+    await application.bot.set_webhook(
+        url=WEBHOOK_URL,
+        secret_token=WEBHOOK_SECRET
+    )
 
-    # Start Web Server
-    app = web.Application()
-    app.router.add_get('/', health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    update = Update.de_json(await request.json(), application.bot)
+    await application.process_update(update)
+    return {"ok": True}
 
-    print("✅ Bot and Web Server Started")
-    await dp.start_polling(bot)
-
-if __name__ == '__main__':
-    asyncio.run(main())
+@app.get("/health")
+async def health():
+    return {"ok": True}

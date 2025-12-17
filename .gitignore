@@ -1,17 +1,4 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.sqlite3
-*.db
-
-# Environment variables
 .env
-
-# VSCode / IDE files
-.vscode/
-.idea/
-
-# Logs
-*.log
+__pycache__
+*.pyc
+venv/

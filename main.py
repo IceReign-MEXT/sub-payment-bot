@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import aiohttp
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from telegram import Bot, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -14,7 +14,7 @@ load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN missing in env")
+    raise ValueError("No TELEGRAM_BOT_TOKEN")
 
 print(f"Loaded token: {TOKEN[:10]}...{TOKEN[-10:]}")
 
@@ -27,7 +27,6 @@ PREMIUM_GROUP_ID = int(os.getenv("PREMIUM_GROUP_ID", "0"))
 MONTHLY_ETH = 0.0033
 LIFETIME_ETH = 0.0167
 
-# High timeouts for reliability
 request = HTTPXRequest(connect_timeout=60, read_timeout=60, pool_timeout=60)
 
 app = Application.builder().token(TOKEN).request(request).build()
@@ -144,7 +143,7 @@ async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"Need ≥ {MONTHLY_ETH} ETH")
 
-# Handlers
+# Add handlers
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("plans", plans))
 app.add_handler(CommandHandler("subscribe", subscribe))
@@ -171,19 +170,22 @@ if __name__ == "__main__":
     import uvicorn
 
     if WEBHOOK_URL:
-        async def start_webhook():
-            print(f"Setting webhook: {WEBHOOK_URL}")
+        async def webhook_mode():
+            print(f"Initializing application for webhook mode...")
+            await app.initialize()
+            await app.start()
+            print(f"Setting webhook to {WEBHOOK_URL}")
             await bot.set_webhook(url=WEBHOOK_URL)
-            print("Webhook set! Bot live 🔥")
+            print("Webhook set successfully! Bot is LIVE 🔥")
             asyncio.create_task(cleanup_task())
             uvicorn.run(api, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
-        asyncio.run(start_webhook())
+        asyncio.run(webhook_mode())
     else:
-        async def start_polling():
+        async def polling_mode():
             await app.initialize()
             await app.start()
             asyncio.create_task(cleanup_task())
-            print("Bot running in polling mode (Termux)")
+            print("Bot running in polling mode")
             await app.updater.start_polling()
             await asyncio.Event().wait()
-        asyncio.run(start_polling())
+        asyncio.run(polling_mode())

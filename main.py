@@ -49,4 +49,8 @@ async def telegram_webhook(
     payload = await request.json()
     update = Update.de_json(payload, tg_app.bot)
     await tg_app.process_update(update)
+<<<<<<< HEAD
     return {"ok": True}
+=======
+    return {"ok": True}
+>>>>>>> db1984f (Clean FastAPI Telegram webhook bot (stable))
